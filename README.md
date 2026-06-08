@@ -25,6 +25,8 @@ box. You can optionally swap in a looping **video** (see below).
 - **Controls** — click / `Esc` / `Space` to dismiss, or `S` to **snooze** (re-arm in `PRODUCTIVITY_BREAK_SNOOZE_MINUTES` without losing the whole cycle). A countdown shows how long is left. Accidental clicks during the slide-in are ignored.
 - Uses `NSWorkspace` for focus detection — **no Accessibility permission needed**. (The overlay briefly takes keyboard focus during the break so the controls work, then restores your previous app.)
 - **Optional menu-bar control** — set `PRODUCTIVITY_BREAK_MENUBAR=on` for a ☕ status item (status / take a break now / pause / quit). Off by default.
+- **Gentle notification mode** — set `PRODUCTIVITY_BREAK_STYLE=notify` to get a macOS notification instead of the full-screen overlay.
+- **Configurable** — env vars, a `~/.config/productivity_break/config.json`, `--help`, and `--validate-config` (see [Configuration](#configuration)).
 
 ## Requirements
 
@@ -123,6 +125,19 @@ break always works, online or not.
 
 ## Configuration
 
+You can configure productivity_break three ways, in increasing precedence:
+
+1. **Built-in defaults**
+2. **A config file** — `~/.config/productivity_break/config.json` (JSON object;
+   keys are the env-var names below, values are strings/numbers/bools/arrays).
+   See [`config.example.json`](config.example.json). Invalid/missing files are
+   ignored with a warning.
+3. **Environment variables** — always win over the file.
+
+Run `productivity_break --help` for the full list, and `--validate-config` to
+print the resolved configuration (and catch typos) without launching anything.
+
+
 Set these as environment variables (or edit the `EnvironmentVariables` block in
 the installed `~/Library/LaunchAgents/com.productivity_break.agent.plist`, then
 re-run `install.sh`):
@@ -135,6 +150,7 @@ re-run `install.sh`):
 | `PRODUCTIVITY_BREAK_IDLE_SECONDS` | `60`    | Input-idle seconds that pause the focus clock      |
 | `PRODUCTIVITY_BREAK_SNOOZE_MINUTES`| `5`     | Re-arm delay when you press `S` to snooze          |
 | `PRODUCTIVITY_BREAK_MENUBAR`      | (off)   | `on` shows a ☕ menu-bar control                    |
+| `PRODUCTIVITY_BREAK_STYLE`        | `overlay` | `overlay` (full-screen) or `notify` (a macOS notification, no takeover) |
 | `PRODUCTIVITY_BREAK_DEFER_APPS`   | (calls) | Comma-separated apps during which a due break waits |
 | `PRODUCTIVITY_BREAK_OVERLAY_ALPHA`| `0.92`  | Background dimming (0 = clear, 1 = opaque black)   |
 | `PRODUCTIVITY_BREAK_QUOTES`       | (on)    | Set to `off` to use only local messages (no network) |

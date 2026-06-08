@@ -24,17 +24,81 @@ import CoreGraphics
 // Configuration (override with env vars)
 // ---------------------------------------------------------------------------
 let ENV = ProcessInfo.processInfo.environment
+// Parsed once at startup; consulted by the env helpers below when an env var is
+// absent. MUST be initialized here, before any config `let` constant uses it.
+let CFG = loadConfigJSON()
 func envDouble(_ key: String, _ def: Double) -> Double {
     if let v = ENV[key], let x = Double(v) { return x }
+    if let v = CFG[key], let x = Double(v) { return x }
     return def
 }
 
 // Parse a boolean-ish env var consistently (on/off/true/false/yes/no/1/0).
 func envBool(_ key: String, _ def: Bool) -> Bool {
-    guard let v = ENV[key]?.trimmingCharacters(in: .whitespaces).lowercased(), !v.isEmpty else { return def }
+    let raw = ENV[key] ?? CFG[key]
+    guard let v = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !v.isEmpty else { return def }
     if ["1", "on", "true", "yes", "y"].contains(v) { return true }
     if ["0", "off", "false", "no", "n"].contains(v) { return false }
     return def
+}
+
+// ============================================================================
+// Layered config file support.
+//
+// Precedence (lowest -> highest):
+//   built-in default  <  ~/.config/productivity_break/config.json  <  env var
+//
+// CFG is a [String:String] parsed from the JSON file at startup. The env-lookup
+// helpers (envDouble/envBool/envString) consult CFG only when the env var is
+// absent, so the environment always wins and the existing top-level `let`
+// constants keep working unchanged. JSON keys are the env var names verbatim.
+// ============================================================================
+func loadConfigJSON() -> [String: String] {
+    let path = (NSHomeDirectory() as NSString)
+        .appendingPathComponent(".config/productivity_break/config.json")
+    let fm = FileManager.default
+    guard fm.fileExists(atPath: path) else { return [:] }   // no file -> defaults only
+
+    guard let data = fm.contents(atPath: path) else {
+        FileHandle.standardError.write("[productivity_break] could not read \(path) — ignoring.\n".data(using: .utf8)!)
+        return [:]
+    }
+    let parsed: Any
+    do {
+        parsed = try JSONSerialization.jsonObject(with: data, options: [])
+    } catch {
+        FileHandle.standardError.write("[productivity_break] invalid JSON in \(path): \(error.localizedDescription) — ignoring.\n".data(using: .utf8)!)
+        return [:]
+    }
+    guard let dict = parsed as? [String: Any] else {
+        FileHandle.standardError.write("[productivity_break] \(path) must contain a top-level JSON object — ignoring.\n".data(using: .utf8)!)
+        return [:]
+    }
+
+    var out: [String: String] = [:]
+    for (k, v) in dict {
+        // Disambiguate JSON booleans from numbers: JSONSerialization bridges both
+        // to NSNumber, and `true` would otherwise stringify to "1".
+        if let n = v as? NSNumber, CFGetTypeID(n as CFTypeRef) == CFBooleanGetTypeID() {
+            out[k] = n.boolValue ? "true" : "false"
+        } else if let s = v as? String {
+            out[k] = s
+        } else if let n = v as? NSNumber {
+            out[k] = n.stringValue
+        } else if let arr = v as? [Any] {
+            // Comma-join arrays so list-style keys work with the existing
+            // `.split(separator: ",")` call sites.
+            out[k] = arr.map { "\($0)" }.joined(separator: ",")
+        }
+        // anything else (null/nested object) is ignored
+    }
+    return out
+}
+
+// Look up a raw string: env var wins, else config.json, else nil.
+func envString(_ key: String) -> String? {
+    if let v = ENV[key] { return v }
+    return CFG[key]
 }
 
 // Remove any leftover downloaded break visual(s) from the temp dir.
@@ -63,17 +127,24 @@ let IDLE_SECONDS    = max(5.0, envDouble("PRODUCTIVITY_BREAK_IDLE_SECONDS", 60))
 let THRESHOLD       = max(1.0, BREAK_MINUTES * 60.0)
 let SNOOZE_MINUTES  = max(0.05, envDouble("PRODUCTIVITY_BREAK_SNOOZE_MINUTES", 5))  // re-arm delay when snoozed
 
+// Break presentation style. "overlay" (default) shows the full-screen overlay;
+// "notify" posts a lightweight macOS notification via osascript instead
+// (no bundle id required — UNUserNotificationCenter would NOT work here).
+// Reads via envString so it also honors config.json (env wins).
+let BREAK_STYLE = (envString("PRODUCTIVITY_BREAK_STYLE") ?? "overlay")
+    .trimmingCharacters(in: .whitespaces).lowercased()
+
 let APP_VERSION = "0.2.0"
 // Generic, non-identifying User-Agent (no app name/version) for the content APIs.
 let HTTP_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
 
 // Apps during which a due break is postponed (not reset) — calls, screen shares,
 // recording. Matched as case-insensitive substrings of the frontmost app name.
-let DEFER_APPS: [String] = (ENV["PRODUCTIVITY_BREAK_DEFER_APPS"]
+let DEFER_APPS: [String] = (envString("PRODUCTIVITY_BREAK_DEFER_APPS")
     ?? "zoom,Microsoft Teams,Webex,FaceTime,OBS Studio,QuickTime Player,ScreenFlow,Loom,Keynote")
     .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty }
 
-let TERMINAL_APPS: [String] = (ENV["PRODUCTIVITY_BREAK_TERMINAL_APPS"]
+let TERMINAL_APPS: [String] = (envString("PRODUCTIVITY_BREAK_TERMINAL_APPS")
     ?? "Terminal,iTerm,Warp,Alacritty,kitty,Hyper,WezTerm,Ghostty")
     .split(separator: ",")
     .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
@@ -97,7 +168,7 @@ func isImageURL(_ url: URL) -> Bool {
 func resolveMediaURL() -> URL? {
     let fm = FileManager.default
     var paths: [String] = []
-    if let p = ENV["PRODUCTIVITY_BREAK_VIDEO"] { paths.append(p) }
+    if let p = envString("PRODUCTIVITY_BREAK_VIDEO") { paths.append(p) }
     let exe = Bundle.main.executablePath ?? CommandLine.arguments.first ?? ""
     let exeDir = (exe as NSString).deletingLastPathComponent
     let home = NSHomeDirectory() as NSString
@@ -690,7 +761,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // Deliver the break as a macOS notification banner. Shells out to osascript so
+    // it works WITHOUT a bundle id (UNUserNotificationCenter is unavailable to a
+    // bare executable). The message is passed as an argv item — NOT interpolated
+    // into the AppleScript source — so quotes/backslashes in API-sourced text
+    // can't break or inject into the script.
+    private func notifyBreak(message: String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = [
+            "-e", "on run argv",
+            "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+            "-e", "end run",
+            message, "productivity_break",
+        ]
+        do {
+            try p.run()
+            p.waitUntilExit()   // ensure the banner is dispatched before test-mode terminate
+        } catch {
+            FileHandle.standardError.write(
+                "[productivity_break] notify failed: \(error)\n".data(using: .utf8)!)
+        }
+    }
+
     private func presentBreak(message: String, mediaURL: URL?) {
+        if BREAK_STYLE == "notify" {
+            FileHandle.standardError.write("[productivity_break] notify mode — posting notification.\n".data(using: .utf8)!)
+            notifyBreak(message: message)
+            // No overlay, no onDone callback: complete the break inline. Mirror the
+            // non-snooze branch of OverlayController.onDone. Snooze has no equivalent
+            // here (no key/button routing to a bare notification), so SNOOZE_MINUTES is inert.
+            self.overlay = nil
+            self.presenting = false          // CRITICAL: poll() guards on `presenting`; leaving it true stops all future breaks
+            self.focused = 0                 // reset the focus clock (no snooze in notify mode)
+            self.lastTick = Date()
+            if self.testMode { NSApp.terminate(nil) }
+            return
+        }
         let oc = OverlayController(message: message, mediaURL: mediaURL)
         oc.onDone = { [weak self, weak oc] in
             guard let self = self else { return }
@@ -715,7 +822,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     //   - Disable all network with PRODUCTIVITY_BREAK_QUOTES=off
     //   - Use your own pool with PRODUCTIVITY_BREAK_MESSAGES (separated by "|")
     private func fetchBreakMessage(completion: @escaping (String) -> Void) {
-        if let custom = ENV["PRODUCTIVITY_BREAK_MESSAGES"] {
+        if let custom = envString("PRODUCTIVITY_BREAK_MESSAGES") {
             let list = custom.split(separator: "|")
                 .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             if let pick = list.randomElement() { completion(pick); return }
@@ -785,7 +892,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     //   - A pinned PRODUCTIVITY_BREAK_VIDEO always wins and skips this.
     private func fetchBreakImage(for message: String, completion: @escaping (URL?) -> Void) {
         if !envBool("PRODUCTIVITY_BREAK_VISUALS", true)
-            || ENV["PRODUCTIVITY_BREAK_VIDEO"] != nil {
+            || envString("PRODUCTIVITY_BREAK_VIDEO") != nil {
             completion(nil); return
         }
         // Themed scenery by default (high quality, work-appropriate). Anime
@@ -917,6 +1024,9 @@ func validateConfig() -> Int32 {
         if let v = ENV[k], Double(v) == nil {
             FileHandle.standardError.write("[productivity_break] invalid \(k)=\(v) — expected a number\n".data(using: .utf8)!)
             ok = false
+        } else if ENV[k] == nil, let v = CFG[k], Double(v) == nil {
+            FileHandle.standardError.write("[productivity_break] invalid \(k)=\(v) in config.json — expected a number\n".data(using: .utf8)!)
+            ok = false
         }
     }
     print("productivity_break config:")
@@ -927,9 +1037,71 @@ func validateConfig() -> Int32 {
     print("  IDLE_SECONDS    = \(IDLE_SECONDS)")
     print("  TERMINAL_APPS   = \(TERMINAL_APPS.joined(separator: ", "))")
     print("  QUOTES=\(envBool("PRODUCTIVITY_BREAK_QUOTES", true)) VISUALS=\(envBool("PRODUCTIVITY_BREAK_VISUALS", true)) ANIME=\(envBool("PRODUCTIVITY_BREAK_ANIME", false))")
+    print("  QUOTES=\(envBool("PRODUCTIVITY_BREAK_QUOTES", true)) VISUALS=\(envBool("PRODUCTIVITY_BREAK_VISUALS", true)) ANIME=\(envBool("PRODUCTIVITY_BREAK_ANIME", false))")
+    print("  STYLE           = \(BREAK_STYLE)")
     print(ok ? "OK" : "INVALID CONFIG")
     return ok ? 0 : 1
 }
+
+if CommandLine.arguments.contains("--help") || CommandLine.arguments.contains("-h") {
+    print("""
+    productivity_break \(APP_VERSION) — a productivity-break nudge for macOS.
+
+    Watches how long your terminal has been the focused (frontmost) app. After
+    BREAK_MINUTES of continuous focused use, a full-screen break overlay appears,
+    holds for a few seconds, then fades away and the timer resets. Runs quietly
+    with no Dock icon. Click / Esc / Space dismisses the break; S snoozes it.
+
+    USAGE:
+      productivity_break [flags]
+      VAR=value ... productivity_break        (configure via environment, see below)
+
+    FLAGS:
+      --version           Print the version and exit.
+      --validate-config   Parse config from the environment and config.json, print it,
+                          and exit (exit 1 if a numeric var is non-numeric).
+                          Headless — safe in CI / scripts.
+      --test              Trigger a break immediately (overlay, or a notification
+                          if STYLE=notify), then exit.
+      --help, -h          Print this help and exit.
+
+    ENVIRONMENT VARIABLES (default in brackets):
+      BREAK_MINUTES                      [25]    Focused minutes before a break shows.
+      PRODUCTIVITY_BREAK_SHOW_SECONDS    [8]     How long the overlay stays up.
+      PRODUCTIVITY_BREAK_POLL_SECONDS    [5]     How often the focused app is checked.
+      PRODUCTIVITY_BREAK_OVERLAY_ALPHA   [0.92]  Background dimming opacity (0.0–1.0).
+      PRODUCTIVITY_BREAK_IDLE_SECONDS    [60]    Input-idle time that pauses the focus clock.
+      PRODUCTIVITY_BREAK_SNOOZE_MINUTES  [5]     Re-arm delay after you press S to snooze.
+      PRODUCTIVITY_BREAK_STYLE           [overlay] Break delivery: "overlay" or "notify" (osascript banner).
+      PRODUCTIVITY_BREAK_TERMINAL_APPS   [Terminal,iTerm,Warp,Alacritty,kitty,Hyper,WezTerm,Ghostty]
+                                                 Comma-separated app-name substrings counted as "terminal".
+      PRODUCTIVITY_BREAK_DEFER_APPS      [zoom,Microsoft Teams,Webex,FaceTime,OBS Studio,QuickTime Player,ScreenFlow,Loom,Keynote]
+                                                 Comma-separated apps during which a due break is postponed (not reset).
+      PRODUCTIVITY_BREAK_MENUBAR         [off]   Show a menu-bar control (Take a break / Pause / Quit).
+      PRODUCTIVITY_BREAK_QUOTES          [on]    Fetch a quote/fact/advice from a public API for each break.
+      PRODUCTIVITY_BREAK_VISUALS         [on]    Fetch a themed scenery image for the overlay background.
+      PRODUCTIVITY_BREAK_ANIME           [off]   Allow opt-in anime art (nekos.best, SFW) as a visual.
+      PRODUCTIVITY_BREAK_MESSAGES        [unset] Your own break messages, separated by "|" (overrides QUOTES fetch).
+      PRODUCTIVITY_BREAK_VIDEO           [unset] Path to a custom break visual (mp4/mov/image/GIF); always wins, skips VISUALS.
+
+    Boolean vars accept on/off, true/false, yes/no, 1/0.
+    Any variable above may also be set in ~/.config/productivity_break/config.json
+    (JSON object, keys = variable names). Precedence: default < config.json < env.
+
+    EXAMPLES:
+      # Preview the break right now and exit:
+      productivity_break --test
+
+      # Run with a short 0.2-minute break for testing, and a custom message:
+      BREAK_MINUTES=0.2 PRODUCTIVITY_BREAK_MESSAGES="Stretch!|Look away" productivity_break
+
+      # Run quietly with the menu-bar control on and no network calls:
+      PRODUCTIVITY_BREAK_MENUBAR=on PRODUCTIVITY_BREAK_QUOTES=off PRODUCTIVITY_BREAK_VISUALS=off productivity_break
+    """)
+    exit(0)
+}
+
+
 
 if CommandLine.arguments.contains("--version") {
     print("productivity_break \(APP_VERSION)")
