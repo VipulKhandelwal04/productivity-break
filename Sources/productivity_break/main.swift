@@ -378,12 +378,16 @@ final class OverlayController {
         if let url = (mediaURL ?? resolveMediaURL()), mediaIsUsable(url) {
             let size = mediaNaturalSize(url)
             let vw = size.width, vh = size.height
-            let regionH = content.height * 0.84
+            // Reserve a top band for the message and a bottom band for the hint,
+            // and fit the media into the middle — so text is never covered.
+            let topBand = content.height * 0.20      // message lives here
+            let bottomBand = content.height * 0.07   // countdown/hint lives here
+            let regionH = content.height - topBand - bottomBand
             let availW = content.width * 0.92
             let scale = min(availW / vw, regionH / vh)
             let w = vw * scale, h = vh * scale
             let x = content.minX + (content.width - w) / 2
-            rest = content.minY + (content.height - h) / 2
+            rest = content.minY + bottomBand + (regionH - h) / 2   // centered in the middle band
             startOff = rest - (content.minY - h)     // start just below the main screen
 
             let container = NSView(frame: NSRect(x: x, y: rest, width: w, height: h))
