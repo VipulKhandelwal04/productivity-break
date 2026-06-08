@@ -247,7 +247,16 @@ final class OverlayController {
         var rest: CGFloat = 0
         var startOff = frame.height * 1.12
         if let url = resolveVideoURL() {
-            let vw: CGFloat = 720, vh: CGFloat = 1280            // native portrait size of the pin clip
+            // Detect the video's actual on-screen size so ANY aspect ratio
+            // (portrait, landscape, square) fits nicely. Falls back to a
+            // portrait default if the track can't be read.
+            var vw: CGFloat = 720, vh: CGFloat = 1280
+            let asset = AVURLAsset(url: url)
+            if let track = asset.tracks(withMediaType: .video).first {
+                let sz = track.naturalSize.applying(track.preferredTransform)
+                let dw = abs(sz.width), dh = abs(sz.height)
+                if dw > 0 && dh > 0 { vw = dw; vh = dh }
+            }
             let regionH = frame.height * 0.84
             let availW = frame.width * 0.92
             let scale = min(availW / vw, regionH / vh)
