@@ -1,13 +1,13 @@
-# 🐱 cat-break
+# 🧘 productivity_break
 
 A tiny macOS productivity nudge. When your **terminal has been the focused app
-for 25 continuous minutes**, a cat fills the screen — sliding up through a
-dimmed overlay, hanging out for a few seconds, then fading away — your cue to
-stretch, blink, and drink some water. The timer then resets.
+for 25 continuous minutes**, a full-screen break overlay fills the screen —
+sliding up through a dimmed backdrop, hanging out for a few seconds, then fading
+away — your cue to stretch, blink, and drink some water. The timer then resets.
 
 Native **Swift + AppKit + AVFoundation**. No third-party dependencies. The
-default cat is drawn in code (vector art), so it works offline out of the box.
-You can optionally swap in a looping cat **video** (see below).
+default art is drawn in code (a vector animal), so it works offline out of the
+box. You can optionally swap in a looping **video** (see below).
 
 ![build](https://img.shields.io/badge/build-swift%20build-orange)
 ![platform](https://img.shields.io/badge/platform-macOS%2012%2B-blue)
@@ -18,8 +18,8 @@ You can optionally swap in a looping cat **video** (see below).
 - **Continuous focus** — the clock only ticks while a terminal app is the
   active/frontmost window. Switch to another app and it **pauses** (it does not
   reset); switch back and it resumes counting.
-- After 25 min the cat appears, auto-fades after ~8 s, and the timer resets.
-- Click anywhere (or just wait) to dismiss the cat.
+- After 25 min the break appears, auto-fades after ~8 s, and the timer resets.
+- Click anywhere (or just wait) to dismiss the overlay.
 - Uses `NSWorkspace` for focus detection — **no Accessibility permission needed**.
 
 ## Requirements
@@ -31,11 +31,11 @@ You can optionally swap in a looping cat **video** (see below).
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/cat-break.git
-cd cat-break
+git clone https://github.com/<you>/productivity_break.git
+cd productivity_break
 
-swift run cat-break --test        # see the cat right now
-BREAK_MINUTES=0.2 swift run cat-break   # try the full flow (cat after ~12 s of terminal focus)
+swift run productivity_break --test        # see the overlay right now
+BREAK_MINUTES=0.2 swift run productivity_break   # try the full flow (after ~12 s of terminal focus)
 ```
 
 ## Install as a background tool (auto-start at login)
@@ -45,9 +45,10 @@ BREAK_MINUTES=0.2 swift run cat-break   # try the full flow (cat after ~12 s of 
 ```
 
 This builds a release binary, copies it to
-`~/Library/Application Support/cat-break/`, and registers a `launchd` login
-agent (`com.cat-break.agent`) that runs quietly in the background — no Dock
-icon, no menu-bar item. It starts immediately and again at every login.
+`~/Library/Application Support/productivity_break/`, and registers a `launchd`
+login agent (`com.productivity_break.agent`) that runs quietly in the
+background — no Dock icon, no menu-bar item. It starts immediately and again at
+every login.
 
 Remove it any time:
 
@@ -55,62 +56,79 @@ Remove it any time:
 ./Scripts/uninstall.sh
 ```
 
-## Optional: the floating-cat video
+## Optional: a break video
 
-By default cat-break draws its own vector cat. If you'd rather see the
-floating-cat clip ([source pin](https://in.pinterest.com/pin/2251868559305065/)):
+By default productivity_break draws its own vector animal. To play a looping
+video instead, drop one in and it'll be picked up automatically.
+
+### Use your own video
 
 ```bash
-./Scripts/fetch-cat.sh        # downloads cat.mp4 for personal use
+PRODUCTIVITY_BREAK_VIDEO=/path/to/your.mp4 swift run productivity_break --test
 ```
 
-> ⚠️ **The video is third-party artwork and is *not* included in this
-> repository** (it's git-ignored). `fetch-cat.sh` downloads it locally for your
-> personal use only — please make sure you have the right to use any clip you
-> add. To use your own video, skip the script and set `CAT_VIDEO`:
->
-> ```bash
-> CAT_VIDEO=/path/to/your.mp4 swift run cat-break --test
-> ```
+Any aspect ratio works (portrait, landscape, square) — the video's real
+dimensions are detected and it's scaled to fit the screen.
+
+You can also place a file named `productivity_break.mp4` in any of these spots
+(checked in order) instead of setting the env var:
+
+1. next to the binary (the install dir)
+2. `~/Library/Application Support/productivity_break/productivity_break.mp4`
+3. `./Resources/productivity_break.mp4` (when running from a checkout)
+
+### The sample "floating cat" clip
+
+A nice sample is the floating-cat clip
+([source pin](https://in.pinterest.com/pin/2251868559305065/)):
+
+```bash
+./Scripts/fetch-video.sh        # downloads productivity_break.mp4 for personal use
+```
+
+> ⚠️ **That video is third-party artwork and is *not* included in this
+> repository** (it's git-ignored). `fetch-video.sh` downloads it locally for
+> your personal use only — please make sure you have the right to use any clip
+> you add.
 
 ## Configuration
 
 Set these as environment variables (or edit the `EnvironmentVariables` block in
-the installed `~/Library/LaunchAgents/com.cat-break.agent.plist`, then re-run
-`install.sh`):
+the installed `~/Library/LaunchAgents/com.productivity_break.agent.plist`, then
+re-run `install.sh`):
 
-| Variable             | Default | Meaning                                            |
-|----------------------|---------|----------------------------------------------------|
-| `BREAK_MINUTES`      | `25`    | Focused-terminal minutes before the cat appears    |
-| `CAT_SHOW_SECONDS`   | `8`     | How long the cat stays on screen                   |
-| `CAT_POLL_SECONDS`   | `5`     | How often focus is checked                         |
-| `CAT_OVERLAY_ALPHA`  | `0.92`  | Background dimming (0 = clear, 1 = opaque black)   |
-| `CAT_VIDEO`          | (auto)  | Path to a cat video. Auto-discovered from the repo's `Resources/cat.mp4`, the install dir, etc. |
-| `CAT_TERMINAL_APPS`  | `Terminal,iTerm,Warp,Alacritty,kitty,Hyper,WezTerm,Ghostty` | Comma-separated app names that count as "the terminal" (matched as case-insensitive substrings) |
+| Variable                          | Default | Meaning                                            |
+|-----------------------------------|---------|----------------------------------------------------|
+| `BREAK_MINUTES`                   | `25`    | Focused-terminal minutes before the break appears  |
+| `PRODUCTIVITY_BREAK_SHOW_SECONDS` | `8`     | How long the overlay stays on screen               |
+| `PRODUCTIVITY_BREAK_POLL_SECONDS` | `5`     | How often focus is checked                         |
+| `PRODUCTIVITY_BREAK_OVERLAY_ALPHA`| `0.92`  | Background dimming (0 = clear, 1 = opaque black)   |
+| `PRODUCTIVITY_BREAK_VIDEO`        | (auto)  | Path to a video. Auto-discovered from the repo's `Resources/`, the install dir, etc. |
+| `PRODUCTIVITY_BREAK_TERMINAL_APPS`| `Terminal,iTerm,Warp,Alacritty,kitty,Hyper,WezTerm,Ghostty` | Comma-separated app names that count as "the terminal" (matched as case-insensitive substrings) |
 
 ## Project layout
 
 ```
-cat-break/
-├── Package.swift                      # Swift Package Manager manifest
-├── Sources/cat-break/main.swift       # the whole program
+productivity_break/
+├── Package.swift                              # Swift Package Manager manifest
+├── Sources/productivity_break/main.swift      # the whole program
 ├── Scripts/
-│   ├── install.sh / uninstall.sh      # set up / tear down the login agent
-│   └── fetch-cat.sh                   # download the optional video (personal use)
-├── packaging/com.cat-break.agent.plist  # launchd template
-├── Resources/cat.mp4                  # optional video (git-ignored, not published)
-└── .github/workflows/build.yml        # CI: builds on macOS
+│   ├── install.sh / uninstall.sh              # set up / tear down the login agent
+│   └── fetch-video.sh                         # download the optional sample video
+├── packaging/com.productivity_break.agent.plist  # launchd template
+├── Resources/productivity_break.mp4           # optional video (git-ignored, not published)
+└── .github/workflows/build.yml                # CI: builds on macOS
 ```
 
 ## Building manually
 
 ```bash
-swift build -c release          # -> .build/release/cat-break
+swift build -c release          # -> .build/release/productivity_break
 # or a single-file build:
-swiftc -O Sources/cat-break/main.swift -o cat-break
+swiftc -O Sources/productivity_break/main.swift -o productivity_break
 ```
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The license covers the **source code**; the
-optional cat video is third-party and is not distributed with this repo.
+MIT — see [LICENSE](LICENSE). The license covers the **source code**; any
+optional break video is third-party and is not distributed with this repo.

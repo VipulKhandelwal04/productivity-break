@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 cat-break contributors
+Copyright (c) 2026 productivity_break contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -21,11 +21,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ---------------------------------------------------------------------------
-NOTE ON THE CAT VIDEO
+NOTE ON THE BREAK VIDEO
 
-This MIT license covers the source code only. The optional cat video
-(Resources/cat.mp4) is NOT part of this repository and is NOT distributed with
-it — it is third-party artwork that Scripts/fetch-cat.sh can download for your
-personal use. You are responsible for ensuring you have the right to use any
-video you supply via that script or the CAT_VIDEO environment variable. The
-built-in default cat is drawn in code and is covered by this license.
+This MIT license covers the source code only. The optional break video
+(Resources/productivity_break.mp4) is NOT part of this repository and is NOT
+distributed with it — it is third-party artwork that Scripts/fetch-video.sh can
+download for your personal use. You are responsible for ensuring you have the
+right to use any video you supply via that script or the
+PRODUCTIVITY_BREAK_VIDEO environment variable. The built-in default animal is
+drawn in code and is covered by this license.

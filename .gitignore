@@ -6,16 +6,19 @@
 DerivedData/
 
 # Compiled binary (single-file builds)
-/cat-break
-cat-break.dSYM/
+/productivity_break
+productivity_break.dSYM/
 
 # Logs
 *.log
 
-# Third-party cat video — NOT redistributed. Fetch it locally with
-# Scripts/fetch-cat.sh, or point CAT_VIDEO at your own clip.
-Resources/cat.mp4
-cat.mp4
+# Local Claude Code settings
+.claude/
+
+# Third-party break video — NOT redistributed. Fetch it locally with
+# Scripts/fetch-video.sh, or point PRODUCTIVITY_BREAK_VIDEO at your own clip.
+Resources/productivity_break.mp4
+productivity_break.mp4
 
 # macOS
 .DS_Store

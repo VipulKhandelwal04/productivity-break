@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "cat-break",
+    name: "productivity_break",
     platforms: [
         .macOS(.v12)
     ],
     targets: [
         .executableTarget(
-            name: "cat-break",
-            path: "Sources/cat-break"
+            name: "productivity_break",
+            path: "Sources/productivity_break"
         )
     ]
 )

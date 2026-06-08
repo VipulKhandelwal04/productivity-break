@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.cat-break.agent</string>
+    <string>com.productivity_break.agent</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -16,7 +16,7 @@
     <dict>
         <key>BREAK_MINUTES</key>
         <string>25</string>
-        <key>CAT_SHOW_SECONDS</key>
+        <key>PRODUCTIVITY_BREAK_SHOW_SECONDS</key>
         <string>8</string>
     </dict>
 

@@ -1,19 +1,20 @@
-// cat-break — a productivity nudge for macOS.
+// productivity_break — a productivity nudge for macOS.
 //
 // Watches how long your terminal has been the *focused* (frontmost) app.
-// After 25 minutes of continuous focused use, a cat fills the screen, holds
-// for a few seconds, then fades away. The timer resets.
+// After 25 minutes of continuous focused use, a full-screen break overlay
+// fills the screen, holds for a few seconds, then fades away. The timer resets.
 //
 // "Continuous focus": the clock only ticks while the terminal is the active
 // app. Switch away and it pauses (does NOT reset); switch back and it resumes.
 //
-// The cat is a hand-drawn vector cat by default. If a cat video is found
-// (see resolveVideoURL / the CAT_VIDEO env var) it is played looped instead.
+// The overlay shows a hand-drawn vector animal by default. If a break video is
+// found (see resolveVideoURL / the PRODUCTIVITY_BREAK_VIDEO env var) it is
+// played looped instead.
 //
-// Build:  swift build -c release         (or: swiftc -O Sources/cat-break/main.swift -o cat-break)
-// Run:    .build/release/cat-break
-//         .build/release/cat-break --test       (show the cat right now)
-//         BREAK_MINUTES=0.2 .build/release/cat-break
+// Build:  swift build -c release    (or: swiftc -O Sources/productivity_break/main.swift -o productivity_break)
+// Run:    .build/release/productivity_break
+//         .build/release/productivity_break --test       (show the overlay right now)
+//         BREAK_MINUTES=0.2 .build/release/productivity_break
 
 import Cocoa
 import AVFoundation
@@ -27,40 +28,42 @@ func envDouble(_ key: String, _ def: Double) -> Double {
     return def
 }
 
-let BREAK_MINUTES   = envDouble("BREAK_MINUTES", 25)        // focus time before the cat shows
-let SHOW_SECONDS    = envDouble("CAT_SHOW_SECONDS", 8)      // how long the cat stays up
-let POLL_SECONDS    = envDouble("CAT_POLL_SECONDS", 5)      // how often we check the focused app
-let OVERLAY_ALPHA   = envDouble("CAT_OVERLAY_ALPHA", 0.92)  // background dimming
+let BREAK_MINUTES   = envDouble("BREAK_MINUTES", 25)                       // focus time before the break shows
+let SHOW_SECONDS    = envDouble("PRODUCTIVITY_BREAK_SHOW_SECONDS", 8)      // how long the overlay stays up
+let POLL_SECONDS    = envDouble("PRODUCTIVITY_BREAK_POLL_SECONDS", 5)      // how often we check the focused app
+let OVERLAY_ALPHA   = envDouble("PRODUCTIVITY_BREAK_OVERLAY_ALPHA", 0.92)  // background dimming
 let THRESHOLD       = BREAK_MINUTES * 60.0
 
-let TERMINAL_APPS: [String] = (ENV["CAT_TERMINAL_APPS"]
+let TERMINAL_APPS: [String] = (ENV["PRODUCTIVITY_BREAK_TERMINAL_APPS"]
     ?? "Terminal,iTerm,Warp,Alacritty,kitty,Hyper,WezTerm,Ghostty")
     .split(separator: ",")
     .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
     .filter { !$0.isEmpty }
 
-// Find an optional cat video. The video is NOT bundled with the project (it may
-// be third-party art); these are the places we look for one a user supplied:
-//   1. $CAT_VIDEO
-//   2. cat.mp4 next to the executable          (installed layout)
-//   3. ~/Library/Application Support/cat-break/cat.mp4   (where fetch-cat.sh puts it)
-//   4. ./Resources/cat.mp4 and ./cat.mp4       (running from a checkout via `swift run`)
-//   5. ~/cat-break/Resources/cat.mp4 (legacy)
-// If none exist, we draw a vector cat instead.
+// Find an optional break video. The video is NOT bundled with the project (it
+// may be third-party art); these are the places we look for one a user added:
+//   1. $PRODUCTIVITY_BREAK_VIDEO
+//   2. productivity_break.mp4 next to the executable          (installed layout)
+//   3. ~/Library/Application Support/productivity_break/productivity_break.mp4
+//   4. ./Resources/productivity_break.mp4 and ./productivity_break.mp4  (running from a checkout)
+//   5. ~/productivity_break/Resources/productivity_break.mp4 (legacy)
+// If none exist, we draw a vector animal instead.
 func resolveVideoURL() -> URL? {
     let fm = FileManager.default
+    let name = "productivity_break.mp4"
     var paths: [String] = []
-    if let p = ENV["CAT_VIDEO"] { paths.append(p) }
+    if let p = ENV["PRODUCTIVITY_BREAK_VIDEO"] { paths.append(p) }
     let exe = Bundle.main.executablePath ?? CommandLine.arguments.first ?? ""
     let exeDir = (exe as NSString).deletingLastPathComponent
-    paths.append(exeDir + "/cat.mp4")
+    paths.append(exeDir + "/" + name)
     let appSupport = (NSHomeDirectory() as NSString)
-        .appendingPathComponent("Library/Application Support/cat-break/cat.mp4")
+        .appendingPathComponent("Library/Application Support/productivity_break/" + name)
     paths.append(appSupport)
     let cwd = fm.currentDirectoryPath
-    paths.append(cwd + "/Resources/cat.mp4")
-    paths.append(cwd + "/cat.mp4")
-    let legacy = (NSHomeDirectory() as NSString).appendingPathComponent("cat-break/Resources/cat.mp4")
+    paths.append(cwd + "/Resources/" + name)
+    paths.append(cwd + "/" + name)
+    let legacy = (NSHomeDirectory() as NSString)
+        .appendingPathComponent("productivity_break/Resources/" + name)
     paths.append(legacy)
     for p in paths where fm.fileExists(atPath: p) { return URL(fileURLWithPath: p) }
     return nil
@@ -68,13 +71,13 @@ func resolveVideoURL() -> URL? {
 
 // ---------------------------------------------------------------------------
 // The overlay view: dims the screen, shows a break banner, and either hosts
-// the looping cat video or draws a vector cat as the default.
+// the looping break video or draws a vector animal as the default.
 // ---------------------------------------------------------------------------
 final class DimView: NSView {
     var message = ""
-    var slideOffset: CGFloat = 0     // used by the vector cat
+    var slideOffset: CGFloat = 0     // used by the vector art
     var bob: CGFloat = 0
-    var drawVectorCat = false
+    var useVectorArt = false
     weak var controller: OverlayController?
 
     override var isFlipped: Bool { false }   // origin bottom-left, y grows upward
@@ -90,12 +93,12 @@ final class DimView: NSView {
 
         drawMessage(in: b)
 
-        if drawVectorCat {
+        if useVectorArt {
             NSGraphicsContext.saveGraphicsState()
             let t = NSAffineTransform()
             t.translateX(by: 0, yBy: -slideOffset + bob)
             t.concat()
-            drawCat(in: b)
+            drawProductivityBreak(in: b)
             NSGraphicsContext.restoreGraphicsState()
         }
     }
@@ -124,7 +127,7 @@ final class DimView: NSView {
                  options: [.usesLineFragmentOrigin], attributes: attrs)
     }
 
-    // ----- the hand-drawn vector cat (default) -----
+    // ----- the hand-drawn vector animal (default) -----
     private func ov(_ cx: CGFloat, _ cy: CGFloat, _ rx: CGFloat, _ ry: CGFloat) -> NSBezierPath {
         NSBezierPath(ovalIn: NSRect(x: cx - rx, y: cy - ry, width: rx * 2, height: ry * 2))
     }
@@ -132,7 +135,7 @@ final class DimView: NSView {
         fill.setFill(); path.fill()
         if let s = stroke { s.setStroke(); path.lineWidth = w; path.stroke() }
     }
-    private func drawCat(in b: NSRect) {
+    private func drawProductivityBreak(in b: NSRect) {
         let orange  = NSColor(srgbRed: 0.949, green: 0.635, blue: 0.235, alpha: 1)
         let orangeD = NSColor(srgbRed: 0.878, green: 0.482, blue: 0.180, alpha: 1)
         let cream   = NSColor(srgbRed: 0.984, green: 0.902, blue: 0.784, alpha: 1)
@@ -241,9 +244,9 @@ final class OverlayController {
         view = DimView(frame: NSRect(origin: .zero, size: frame.size))
         view.message = message
 
-        // Try a looping cat video, fitted into the lower ~84% of the screen
+        // Try a looping break video, fitted into the lower ~84% of the screen
         // (leaving a band at the top for the break banner). Fall back to the
-        // vector cat if no video is available.
+        // vector art if no video is available.
         var rest: CGFloat = 0
         var startOff = frame.height * 1.12
         if let url = resolveVideoURL() {
@@ -283,7 +286,7 @@ final class OverlayController {
             self.videoContainer = container
             container.setFrameOrigin(NSPoint(x: x, y: rest - startOff))
         } else {
-            view.drawVectorCat = true
+            view.useVectorArt = true
             view.slideOffset = startOff
         }
 
@@ -369,12 +372,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         if testMode {
-            FileHandle.standardError.write("[cat-break] --test: showing the cat now.\n".data(using: .utf8)!)
-            showCat()
+            FileHandle.standardError.write("[productivity_break] --test: showing the break overlay now.\n".data(using: .utf8)!)
+            showBreak()
             return
         }
         FileHandle.standardError.write(
-            "[cat-break] watching terminal focus — cat appears after \(fmt(BREAK_MINUTES)) min of continuous focused use.\n"
+            "[productivity_break] watching terminal focus — break appears after \(fmt(BREAK_MINUTES)) min of continuous focused use.\n"
                 .data(using: .utf8)!)
         lastTick = Date()
         let t = Timer(timeInterval: POLL_SECONDS, repeats: true) { [weak self] _ in self?.poll() }
@@ -392,20 +395,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let now = Date()
         let dt = now.timeIntervalSince(lastTick)
         lastTick = now
-        if overlay != nil { return }          // cat is on screen; don't count or re-trigger
+        if overlay != nil { return }          // overlay is on screen; don't count or re-trigger
         if terminalFocused() {
             focused += dt
             if focused >= THRESHOLD {
                 FileHandle.standardError.write(
-                    "[cat-break] \(fmt(BREAK_MINUTES)) min of focus reached — here comes the cat.\n"
+                    "[productivity_break] \(fmt(BREAK_MINUTES)) min of focus reached — here comes your break.\n"
                         .data(using: .utf8)!)
-                showCat()
+                showBreak()
             }
         }
         // not focused -> pause: neither accumulate nor reset
     }
 
-    private func showCat() {
+    private func showBreak() {
         let msg = "Break time! You've been heads-down for \(fmt(BREAK_MINUTES)) min — float for a moment."
         let oc = OverlayController(message: msg)
         oc.onDone = { [weak self] in
