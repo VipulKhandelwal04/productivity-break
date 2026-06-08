@@ -7,9 +7,9 @@
 // "Continuous focus": the clock only ticks while the terminal is the active
 // app. Switch away and it pauses (does NOT reset); switch back and it resumes.
 //
-// The overlay shows a hand-drawn vector animal by default. If a break video is
-// found (see resolveVideoURL / the PRODUCTIVITY_BREAK_VIDEO env var) it is
-// played looped instead.
+// The overlay shows a hand-drawn vector animal by default. If a break visual is
+// found (see resolveMediaURL / the PRODUCTIVITY_BREAK_VIDEO env var) it is shown
+// instead — a looping video (mp4/mov) OR a still image / animated GIF.
 //
 // Build:  swift build -c release    (or: swiftc -O Sources/productivity_break/main.swift -o productivity_break)
 // Run:    .build/release/productivity_break
@@ -40,38 +40,66 @@ let TERMINAL_APPS: [String] = (ENV["PRODUCTIVITY_BREAK_TERMINAL_APPS"]
     .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
     .filter { !$0.isEmpty }
 
-// Find an optional break video. The video is NOT bundled with the project (it
-// may be third-party art); these are the places we look for one a user added:
-//   1. $PRODUCTIVITY_BREAK_VIDEO
-//   2. productivity_break.mp4 next to the executable          (installed layout)
-//   3. ~/Library/Application Support/productivity_break/productivity_break.mp4
-//   4. ./Resources/productivity_break.mp4 and ./productivity_break.mp4  (running from a checkout)
-//   5. ~/productivity_break/Resources/productivity_break.mp4 (legacy)
+let IMAGE_EXTENSIONS = ["gif", "png", "jpg", "jpeg", "heic", "bmp", "tiff", "webp"]
+let MEDIA_EXTENSIONS = ["mp4", "mov", "m4v"] + IMAGE_EXTENSIONS   // search/preference order
+
+func isImageURL(_ url: URL) -> Bool {
+    IMAGE_EXTENSIONS.contains(url.pathExtension.lowercased())
+}
+
+// Find an optional break visual (video, image, or GIF). It is NOT bundled with
+// the project (it may be third-party art); we look in these places, in order:
+//   1. $PRODUCTIVITY_BREAK_VIDEO  (any media file — kept this name for compat)
+//   2. productivity_break.<ext> next to the executable          (installed layout)
+//   3. ~/Library/Application Support/productivity_break/productivity_break.<ext>
+//   4. ./Resources/productivity_break.<ext> and ./productivity_break.<ext>
+//   5. ~/productivity_break/Resources/productivity_break.<ext> (legacy)
 // If none exist, we draw a vector animal instead.
-func resolveVideoURL() -> URL? {
+func resolveMediaURL() -> URL? {
     let fm = FileManager.default
-    let name = "productivity_break.mp4"
     var paths: [String] = []
     if let p = ENV["PRODUCTIVITY_BREAK_VIDEO"] { paths.append(p) }
     let exe = Bundle.main.executablePath ?? CommandLine.arguments.first ?? ""
     let exeDir = (exe as NSString).deletingLastPathComponent
-    paths.append(exeDir + "/" + name)
-    let appSupport = (NSHomeDirectory() as NSString)
-        .appendingPathComponent("Library/Application Support/productivity_break/" + name)
-    paths.append(appSupport)
+    let home = NSHomeDirectory() as NSString
     let cwd = fm.currentDirectoryPath
-    paths.append(cwd + "/Resources/" + name)
-    paths.append(cwd + "/" + name)
-    let legacy = (NSHomeDirectory() as NSString)
-        .appendingPathComponent("productivity_break/Resources/" + name)
-    paths.append(legacy)
+    let dirs = [
+        exeDir,
+        home.appendingPathComponent("Library/Application Support/productivity_break"),
+        cwd + "/Resources",
+        cwd,
+        home.appendingPathComponent("productivity_break/Resources"),
+    ]
+    for d in dirs {
+        for e in MEDIA_EXTENSIONS {
+            paths.append(d + "/productivity_break." + e)
+        }
+    }
     for p in paths where fm.fileExists(atPath: p) { return URL(fileURLWithPath: p) }
     return nil
 }
 
+func mediaNaturalSize(_ url: URL) -> CGSize {
+    let fallback = CGSize(width: 720, height: 1280)
+    if isImageURL(url) {
+        if let rep = NSImage(contentsOf: url)?.representations.first {
+            let w = CGFloat(rep.pixelsWide), h = CGFloat(rep.pixelsHigh)
+            if w > 0 && h > 0 { return CGSize(width: w, height: h) }
+        }
+        return fallback
+    }
+    let asset = AVURLAsset(url: url)
+    if let track = asset.tracks(withMediaType: .video).first {
+        let sz = track.naturalSize.applying(track.preferredTransform)
+        let w = abs(sz.width), h = abs(sz.height)
+        if w > 0 && h > 0 { return CGSize(width: w, height: h) }
+    }
+    return fallback
+}
+
 // ---------------------------------------------------------------------------
 // The overlay view: dims the screen, shows a break banner, and either hosts
-// the looping break video or draws a vector animal as the default.
+// the break visual or draws a vector animal as the default.
 // ---------------------------------------------------------------------------
 final class DimView: NSView {
     var message = ""
@@ -212,7 +240,7 @@ final class OverlayController {
 
     private let window: NSWindow
     private let view: DimView
-    private var videoContainer: NSView?
+    private var mediaContainer: NSView?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var timer: Timer?
@@ -244,22 +272,16 @@ final class OverlayController {
         view = DimView(frame: NSRect(origin: .zero, size: frame.size))
         view.message = message
 
-        // Try a looping break video, fitted into the lower ~84% of the screen
-        // (leaving a band at the top for the break banner). Fall back to the
-        // vector art if no video is available.
+        // Try a break visual (video, image, or GIF), fitted into the lower ~84%
+        // of the screen (leaving a band at the top for the break banner). Fall
+        // back to the vector art if no media is available.
         var rest: CGFloat = 0
         var startOff = frame.height * 1.12
-        if let url = resolveVideoURL() {
-            // Detect the video's actual on-screen size so ANY aspect ratio
-            // (portrait, landscape, square) fits nicely. Falls back to a
-            // portrait default if the track can't be read.
-            var vw: CGFloat = 720, vh: CGFloat = 1280
-            let asset = AVURLAsset(url: url)
-            if let track = asset.tracks(withMediaType: .video).first {
-                let sz = track.naturalSize.applying(track.preferredTransform)
-                let dw = abs(sz.width), dh = abs(sz.height)
-                if dw > 0 && dh > 0 { vw = dw; vh = dh }
-            }
+        if let url = resolveMediaURL() {
+            // Detect the media's actual size so ANY aspect ratio (portrait,
+            // landscape, square) fits nicely.
+            let size = mediaNaturalSize(url)
+            let vw = size.width, vh = size.height
             let regionH = frame.height * 0.84
             let availW = frame.width * 0.92
             let scale = min(availW / vw, regionH / vh)
@@ -270,20 +292,31 @@ final class OverlayController {
 
             let container = NSView(frame: NSRect(x: x, y: rest, width: w, height: h))
             container.wantsLayer = true
-            let item = AVPlayerItem(url: url)
-            let queue = AVQueuePlayer()
-            queue.isMuted = true
-            let lp = AVPlayerLooper(player: queue, templateItem: item)
-            let playerLayer = AVPlayerLayer(player: queue)
-            playerLayer.frame = container.bounds
-            playerLayer.videoGravity = .resizeAspect
-            playerLayer.cornerRadius = max(10, w * 0.04)
-            playerLayer.masksToBounds = true
-            container.layer?.addSublayer(playerLayer)
+            container.layer?.cornerRadius = max(10, w * 0.04)
+            container.layer?.masksToBounds = true
+
+            if isImageURL(url) {
+                let iv = NSImageView(frame: container.bounds)
+                iv.image = NSImage(contentsOf: url)
+                iv.imageScaling = .scaleProportionallyUpOrDown
+                iv.animates = true                 // animates GIFs
+                iv.autoresizingMask = [.width, .height]
+                container.addSubview(iv)
+            } else {
+                let item = AVPlayerItem(url: url)
+                let queue = AVQueuePlayer()
+                queue.isMuted = true
+                let lp = AVPlayerLooper(player: queue, templateItem: item)
+                let playerLayer = AVPlayerLayer(player: queue)
+                playerLayer.frame = container.bounds
+                playerLayer.videoGravity = .resizeAspect
+                container.layer?.addSublayer(playerLayer)
+                self.player = queue
+                self.looper = lp
+            }
+
             view.addSubview(container)
-            self.player = queue
-            self.looper = lp
-            self.videoContainer = container
+            self.mediaContainer = container
             container.setFrameOrigin(NSPoint(x: x, y: rest - startOff))
         } else {
             view.useVectorArt = true
@@ -316,7 +349,7 @@ final class OverlayController {
     }
 
     private func place(offset: CGFloat, bob: CGFloat) {
-        if let c = videoContainer {
+        if let c = mediaContainer {
             c.setFrameOrigin(NSPoint(x: c.frame.origin.x, y: restY - offset + bob))
         } else {
             view.slideOffset = offset
@@ -409,7 +442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showBreak() {
-        let msg = "Break time! You've been heads-down for \(fmt(BREAK_MINUTES)) min — float for a moment."
+        let msg = "Break time! You've been heads-down for \(fmt(BREAK_MINUTES)) min — go find a spot in nature."
         let oc = OverlayController(message: msg)
         oc.onDone = { [weak self] in
             guard let self = self else { return }

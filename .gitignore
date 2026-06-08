@@ -17,8 +17,9 @@ productivity_break.dSYM/
 
 # Third-party break video — NOT redistributed. Fetch it locally with
 # Scripts/fetch-video.sh, or point PRODUCTIVITY_BREAK_VIDEO at your own clip.
-Resources/productivity_break.mp4
+Resources/productivity_break.*
 productivity_break.mp4
+productivity_break.jpg
 
 # macOS
 .DS_Store
