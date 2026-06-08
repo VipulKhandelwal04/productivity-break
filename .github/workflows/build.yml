@@ -15,12 +15,14 @@ jobs:
         run: swift --version
       - name: Build (release)
         run: swift build -c release
-      - name: Smoke test (binary launches)
-        # Run very briefly with a tiny show time; --test shows the overlay then
-        # exits. CI has no display, so we just confirm it doesn't crash on start.
+      - name: Validate config (headless)
         run: |
-          PRODUCTIVITY_BREAK_SHOW_SECONDS=0.2 ./.build/release/productivity_break --test &
-          PID=$!
-          sleep 3
-          if kill -0 $PID 2>/dev/null; then kill $PID; fi
-          echo "launched ok"
+          set -euo pipefail
+          ./.build/release/productivity_break --validate-config
+          echo "default config OK"
+          # Negative test: a bad value must exit non-zero.
+          if BREAK_MINUTES=not-a-number ./.build/release/productivity_break --validate-config; then
+            echo "FAIL: bad config was accepted"; exit 1
+          else
+            echo "bad config correctly rejected"
+          fi

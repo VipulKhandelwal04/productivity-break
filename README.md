@@ -18,6 +18,7 @@ box. You can optionally swap in a looping **video** (see below).
 - **Continuous focus** — the clock only ticks while a terminal app is the
   active/frontmost window. Switch to another app and it **pauses** (it does not
   reset); switch back and it resumes counting.
+- **Idle pause** — if you stop typing/moving the mouse for `PRODUCTIVITY_BREAK_IDLE_SECONDS` (default 60s), the clock pauses too, so stepping away from a focused terminal doesn't count (no Accessibility permission needed).
 - After 25 min the break appears, auto-fades after ~8 s, and the timer resets.
 - Click anywhere (or just wait) to dismiss the overlay.
 - Uses `NSWorkspace` for focus detection — **no Accessibility permission needed**.
@@ -128,6 +129,7 @@ re-run `install.sh`):
 | `BREAK_MINUTES`                   | `25`    | Focused-terminal minutes before the break appears  |
 | `PRODUCTIVITY_BREAK_SHOW_SECONDS` | `8`     | How long the overlay stays on screen               |
 | `PRODUCTIVITY_BREAK_POLL_SECONDS` | `5`     | How often focus is checked                         |
+| `PRODUCTIVITY_BREAK_IDLE_SECONDS` | `60`    | Input-idle seconds that pause the focus clock      |
 | `PRODUCTIVITY_BREAK_OVERLAY_ALPHA`| `0.92`  | Background dimming (0 = clear, 1 = opaque black)   |
 | `PRODUCTIVITY_BREAK_QUOTES`       | (on)    | Set to `off` to use only local messages (no network) |
 | `PRODUCTIVITY_BREAK_MESSAGES`     | (none)  | Your own message pool, separated by `\|` — overrides the online fetch |
@@ -154,6 +156,8 @@ productivity_break/
 
 ```bash
 swift build -c release          # -> .build/release/productivity_break
+# check your configuration without launching the GUI:
+./.build/release/productivity_break --validate-config
 # or a single-file build:
 swiftc -O Sources/productivity_break/main.swift -o productivity_break
 ```

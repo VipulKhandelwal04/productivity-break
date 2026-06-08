@@ -18,6 +18,7 @@
 
 import Cocoa
 import AVFoundation
+import CoreGraphics
 
 // ---------------------------------------------------------------------------
 // Configuration (override with env vars)
@@ -28,11 +29,38 @@ func envDouble(_ key: String, _ def: Double) -> Double {
     return def
 }
 
-let BREAK_MINUTES   = envDouble("BREAK_MINUTES", 25)                       // focus time before the break shows
-let SHOW_SECONDS    = envDouble("PRODUCTIVITY_BREAK_SHOW_SECONDS", 8)      // how long the overlay stays up
-let POLL_SECONDS    = envDouble("PRODUCTIVITY_BREAK_POLL_SECONDS", 5)      // how often we check the focused app
-let OVERLAY_ALPHA   = envDouble("PRODUCTIVITY_BREAK_OVERLAY_ALPHA", 0.92)  // background dimming
-let THRESHOLD       = BREAK_MINUTES * 60.0
+// Parse a boolean-ish env var consistently (on/off/true/false/yes/no/1/0).
+func envBool(_ key: String, _ def: Bool) -> Bool {
+    guard let v = ENV[key]?.trimmingCharacters(in: .whitespaces).lowercased(), !v.isEmpty else { return def }
+    if ["1", "on", "true", "yes", "y"].contains(v) { return true }
+    if ["0", "off", "false", "no", "n"].contains(v) { return false }
+    return def
+}
+
+// Remove any leftover downloaded break visual(s) from the temp dir.
+func cleanupTempVisuals() {
+    let dir = NSTemporaryDirectory()
+    let fm = FileManager.default
+    if let items = try? fm.contentsOfDirectory(atPath: dir) {
+        for f in items where f.hasPrefix("productivity_break_visual.") {
+            try? fm.removeItem(atPath: (dir as NSString).appendingPathComponent(f))
+        }
+    }
+}
+
+// Can this media file actually be decoded? (Network images are validated on
+// download; this guards local/pinned files so a corrupt one doesn't show blank.)
+func mediaIsUsable(_ url: URL) -> Bool {
+    if isImageURL(url) { return NSImage(contentsOf: url) != nil }
+    return !AVURLAsset(url: url).tracks(withMediaType: .video).isEmpty
+}
+
+let BREAK_MINUTES   = max(0.05, envDouble("BREAK_MINUTES", 25))            // focus time before the break shows
+let SHOW_SECONDS    = max(0.1, envDouble("PRODUCTIVITY_BREAK_SHOW_SECONDS", 8))   // how long the overlay stays up
+let POLL_SECONDS    = max(0.5, envDouble("PRODUCTIVITY_BREAK_POLL_SECONDS", 5))   // how often we check the focused app
+let OVERLAY_ALPHA   = min(1.0, max(0.0, envDouble("PRODUCTIVITY_BREAK_OVERLAY_ALPHA", 0.92)))  // background dimming
+let IDLE_SECONDS    = max(5.0, envDouble("PRODUCTIVITY_BREAK_IDLE_SECONDS", 60)) // input-idle time that pauses the focus clock
+let THRESHOLD       = max(1.0, BREAK_MINUTES * 60.0)
 
 let TERMINAL_APPS: [String] = (ENV["PRODUCTIVITY_BREAK_TERMINAL_APPS"]
     ?? "Terminal,iTerm,Warp,Alacritty,kitty,Hyper,WezTerm,Ghostty")
@@ -139,20 +167,28 @@ final class DimView: NSView {
         shadow.shadowColor = NSColor.black.withAlphaComponent(0.7)
         shadow.shadowBlurRadius = 10
         shadow.shadowOffset = NSSize(width: 0, height: -2)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: max(20, b.height / 30)),
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: para,
-            .shadow: shadow,
-        ]
+        func attrs(_ size: CGFloat) -> [NSAttributedString.Key: Any] {
+            [.font: NSFont.boldSystemFont(ofSize: size), .foregroundColor: NSColor.white,
+             .paragraphStyle: para, .shadow: shadow]
+        }
         let msg = message as NSString
         let boxW = b.width * 0.8
-        let measured = msg.boundingRect(
-            with: NSSize(width: boxW, height: b.height * 0.2),
-            options: [.usesLineFragmentOrigin], attributes: attrs)
+        let maxH = b.height * 0.16
+        // Shrink the font until a long quote/fact fits the banner band instead
+        // of overflowing off-screen.
+        var fontSize = max(20, b.height / 30)
+        func measure(_ size: CGFloat) -> NSRect {
+            msg.boundingRect(with: NSSize(width: boxW, height: .greatestFiniteMagnitude),
+                             options: [.usesLineFragmentOrigin], attributes: attrs(size))
+        }
+        var measured = measure(fontSize)
+        while fontSize > 13 && measured.height > maxH {
+            fontSize -= 2
+            measured = measure(fontSize)
+        }
         let y = b.height * 0.9 - measured.height / 2
         msg.draw(with: NSRect(x: (b.width - boxW) / 2, y: y, width: boxW, height: measured.height),
-                 options: [.usesLineFragmentOrigin], attributes: attrs)
+                 options: [.usesLineFragmentOrigin], attributes: attrs(fontSize))
     }
 
     // ----- the hand-drawn vector animal (default) -----
@@ -257,8 +293,8 @@ final class OverlayController {
     private let fadeOutDur = 0.5
 
     init(message: String, mediaURL: URL? = nil) {
-        let screen = NSScreen.main ?? NSScreen.screens.first!
-        let frame = screen.frame
+        let frame = (NSScreen.main ?? NSScreen.screens.first)?.frame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)   // safe fallback; showBreak() guards real use
         window = NSWindow(contentRect: frame, styleMask: .borderless,
                           backing: .buffered, defer: false)
         window.isOpaque = false
@@ -277,7 +313,7 @@ final class OverlayController {
         // back to the vector art if no media is available.
         var rest: CGFloat = 0
         var startOff = frame.height * 1.12
-        if let url = mediaURL ?? resolveMediaURL() {
+        if let url = (mediaURL ?? resolveMediaURL()), mediaIsUsable(url) {
             // Detect the media's actual size so ANY aspect ratio (portrait,
             // landscape, square) fits nicely.
             let size = mediaNaturalSize(url)
@@ -419,18 +455,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor = t
     }
 
+    func applicationWillTerminate(_ note: Notification) {
+        cleanupTempVisuals()
+    }
+
     private func terminalFocused() -> Bool {
         guard let app = NSWorkspace.shared.frontmostApplication else { return false }
         let name = (app.localizedName ?? "").lowercased()
         return TERMINAL_APPS.contains { name.contains($0) }
     }
 
+    // Seconds since the last keyboard/mouse input — used to pause the clock when
+    // the user walks away. Permission-free (unlike a CGEventTap).
+    private func userIsIdle() -> Bool {
+        guard let anyInput = CGEventType(rawValue: ~0) else { return false }
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
+        return idle >= IDLE_SECONDS
+    }
+
     private func poll() {
         let now = Date()
-        let dt = now.timeIntervalSince(lastTick)
+        // Clamp dt so a sleep/wake gap doesn't dump the whole sleep duration
+        // into the counter and fire a break the instant the machine wakes.
+        let dt = min(now.timeIntervalSince(lastTick), POLL_SECONDS * 2)
         lastTick = now
         if overlay != nil || presenting { return }   // break is up or being prepared
-        if terminalFocused() {
+        // Only count time the terminal is focused AND the user is actually here.
+        if terminalFocused() && !userIsIdle() {
             focused += dt
             if focused >= THRESHOLD {
                 FileHandle.standardError.write(
@@ -439,10 +490,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 showBreak()
             }
         }
-        // not focused -> pause: neither accumulate nor reset
+        // not focused or idle -> pause: neither accumulate nor reset
     }
 
     private func showBreak() {
+        guard (NSScreen.main ?? NSScreen.screens.first) != nil else {
+            FileHandle.standardError.write("[productivity_break] no display available — skipping break.\n".data(using: .utf8)!)
+            focused = 0
+            lastTick = Date()
+            if testMode { NSApp.terminate(nil) }
+            return
+        }
         presenting = true
         fetchBreakMessage { [weak self] msg in
             guard let self = self else { return }
@@ -456,6 +514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.presenting = false
                     self.focused = 0
                     self.lastTick = Date()
+                    cleanupTempVisuals()
                     if self.testMode { NSApp.terminate(nil) }
                 }
                 self.overlay = oc
@@ -475,7 +534,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             if let pick = list.randomElement() { completion(pick); return }
         }
-        if (ENV["PRODUCTIVITY_BREAK_QUOTES"] ?? "").lowercased() == "off" {
+        if !envBool("PRODUCTIVITY_BREAK_QUOTES", true) {
             completion(localBreakMessage()); return
         }
         struct Source { let url: String; let parse: (Any) -> String? }
@@ -539,14 +598,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     //   - Disable with PRODUCTIVITY_BREAK_VISUALS=off  (uses the local visual)
     //   - A pinned PRODUCTIVITY_BREAK_VIDEO always wins and skips this.
     private func fetchBreakImage(for message: String, completion: @escaping (URL?) -> Void) {
-        if (ENV["PRODUCTIVITY_BREAK_VISUALS"] ?? "").lowercased() == "off"
+        if !envBool("PRODUCTIVITY_BREAK_VISUALS", true)
             || ENV["PRODUCTIVITY_BREAK_VIDEO"] != nil {
             completion(nil); return
         }
         // Themed scenery by default (high quality, work-appropriate). Anime
         // character art (via nekos.best) is opt-in, since it can be stylized or
         // suggestive — enable it with PRODUCTIVITY_BREAK_ANIME=on.
-        let animeOn = ["1", "on", "true", "yes"].contains((ENV["PRODUCTIVITY_BREAK_ANIME"] ?? "").lowercased())
+        let animeOn = envBool("PRODUCTIVITY_BREAK_ANIME", false)
         if animeOn && Int.random(in: 0..<3) == 0 {
             fetchAnimeImage { url in
                 if url != nil { completion(url) }
@@ -662,6 +721,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // ---------------------------------------------------------------------------
+// Parse config and report it, exiting non-zero on bad input. Headless (no GUI),
+// so it is safe to run in CI and from scripts.
+func validateConfig() -> Int32 {
+    var ok = true
+    let numeric = ["BREAK_MINUTES", "PRODUCTIVITY_BREAK_SHOW_SECONDS", "PRODUCTIVITY_BREAK_POLL_SECONDS",
+                   "PRODUCTIVITY_BREAK_OVERLAY_ALPHA", "PRODUCTIVITY_BREAK_IDLE_SECONDS"]
+    for k in numeric {
+        if let v = ENV[k], Double(v) == nil {
+            FileHandle.standardError.write("[productivity_break] invalid \(k)=\(v) — expected a number\n".data(using: .utf8)!)
+            ok = false
+        }
+    }
+    print("productivity_break config:")
+    print("  BREAK_MINUTES   = \(BREAK_MINUTES)  (threshold \(THRESHOLD)s)")
+    print("  SHOW_SECONDS    = \(SHOW_SECONDS)")
+    print("  POLL_SECONDS    = \(POLL_SECONDS)")
+    print("  OVERLAY_ALPHA   = \(OVERLAY_ALPHA)")
+    print("  IDLE_SECONDS    = \(IDLE_SECONDS)")
+    print("  TERMINAL_APPS   = \(TERMINAL_APPS.joined(separator: ", "))")
+    print("  QUOTES=\(envBool("PRODUCTIVITY_BREAK_QUOTES", true)) VISUALS=\(envBool("PRODUCTIVITY_BREAK_VISUALS", true)) ANIME=\(envBool("PRODUCTIVITY_BREAK_ANIME", false))")
+    print(ok ? "OK" : "INVALID CONFIG")
+    return ok ? 0 : 1
+}
+
+if CommandLine.arguments.contains("--validate-config") {
+    exit(validateConfig())
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate(testMode: CommandLine.arguments.contains("--test"))
 app.delegate = delegate
