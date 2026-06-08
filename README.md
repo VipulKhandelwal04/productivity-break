@@ -184,6 +184,16 @@ swift build -c release          # -> .build/release/productivity_break
 swiftc -O Sources/productivity_break/main.swift -o productivity_break
 ```
 
+## Contributing
+
+Contributions are welcome! Fork the repo, make your change in
+`Sources/productivity_break/main.swift`, and open a pull request. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for build/run steps and guidelines, and
+please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Good first contributions: new break-message sources, additional terminal apps in
+the default list, accessibility improvements (Reduce Motion), or a Settings UI.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The license covers the **source code**; any
