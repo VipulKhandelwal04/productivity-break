@@ -1,32 +1,40 @@
 # 🧘 productivity_break
 
-A tiny macOS productivity nudge. When your **terminal has been the focused app
-for 25 continuous minutes**, a full-screen break overlay fills the screen —
-sliding up through a dimmed backdrop, hanging out for a few seconds, then fading
-away — your cue to stretch, blink, and drink some water. The timer then resets.
+A tiny macOS productivity nudge. When your terminal has been the focused app for
+**25 continuous minutes**, a full-screen break gently takes over the screen for a
+few seconds — with a fresh quote/fact and a calming visual — then fades away and
+the timer resets. Your cue to stretch, blink, and look away.
 
-Native **Swift + AppKit + AVFoundation**. No third-party dependencies. The
-default art is drawn in code (a vector animal), so it works offline out of the
-box. You can optionally swap in a looping **video** (see below).
+Native **Swift + AppKit + AVFoundation**, a single self-contained binary with
+**no third-party dependencies** and **no required permissions or API keys**. It
+works fully offline (built-in vector art + local message pool), and optionally
+pulls fresh, themed content from the web or from a media source of your choice.
 
 ![build](https://img.shields.io/badge/build-swift%20build-orange)
 ![platform](https://img.shields.io/badge/platform-macOS%2012%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
-## How the timer works
+## Features
 
-- **Continuous focus** — the clock only ticks while a terminal app is the
-  active/frontmost window. Switch to another app and it **pauses** (it does not
-  reset); switch back and it resumes counting.
-- **Idle pause** — if you stop typing/moving the mouse for `PRODUCTIVITY_BREAK_IDLE_SECONDS` (default 60s), the clock pauses too, so stepping away from a focused terminal doesn't count (no Accessibility permission needed).
-- After 25 min the break appears, auto-fades after ~8 s, and the timer resets.
-- **Covers every monitor** — all displays dim; the visual + message appear on the main screen.
-- **Defers around calls** — a due break is postponed (not reset) while a call/recording/presentation app is frontmost (`PRODUCTIVITY_BREAK_DEFER_APPS`).
-- **Controls** — click / `Esc` / `Space` to dismiss, or `S` to **snooze** (re-arm in `PRODUCTIVITY_BREAK_SNOOZE_MINUTES` without losing the whole cycle). A countdown shows how long is left. Accidental clicks during the slide-in are ignored.
-- Uses `NSWorkspace` for focus detection — **no Accessibility permission needed**. (The overlay briefly takes keyboard focus during the break so the controls work, then restores your previous app.)
-- **Optional menu-bar control** — set `PRODUCTIVITY_BREAK_MENUBAR=on` for a ☕ status item (status / take a break now / pause / quit). Off by default.
-- **Gentle notification mode** — set `PRODUCTIVITY_BREAK_STYLE=notify` to get a macOS notification instead of the full-screen overlay.
-- **Configurable** — env vars, a `~/.config/productivity_break/config.json`, `--help`, and `--validate-config` (see [Configuration](#configuration)).
+- ⏱️ **Continuous-focus timer** — only counts time your terminal is frontmost;
+  pauses (doesn't reset) when you switch away or go idle. No Accessibility
+  permission needed (`NSWorkspace` + `CGEventSource`).
+- 🖥️ **Full-screen break across every monitor** — dims all displays, slides a
+  visual up on the main screen, holds, then fades. Click / `Esc` / `Space` to
+  dismiss, `S` to **snooze**, with a live countdown. Accidental clicks during the
+  entrance are ignored.
+- 🎙️ **Defers around calls** — postpones (doesn't reset) a due break while a
+  call/recording/presentation app is frontmost.
+- 💬 **Fresh content every break** — a random quote / fun fact / advice + a
+  **matching** themed image, with graceful offline fallbacks.
+- 🖼️ **Bring your own visuals** — a local image/GIF/video, or your own
+  **Unsplash / Pexels / Giphy / Tenor** account via an API key.
+- 🔔 **Gentle notification mode** — a macOS notification instead of the takeover.
+- ☕ **Optional menu-bar control** — status / take a break now / pause / quit.
+- 🔧 **Configurable** — environment variables or a `config.json`, plus `--help`
+  and `--validate-config`.
+- 🔒 **Privacy-respecting** — content is pre-fetched off the break instant; all
+  network access is optional and off-switchable.
 
 ## Requirements
 
@@ -40,33 +48,63 @@ box. You can optionally swap in a looping **video** (see below).
 git clone https://github.com/<you>/productivity_break.git
 cd productivity_break
 
-swift run productivity_break --test        # see the overlay right now
-BREAK_MINUTES=0.2 swift run productivity_break   # try the full flow (after ~12 s of terminal focus)
+swift run productivity_break --test                 # preview a break right now
+swift run productivity_break --help                 # all flags + env vars
+BREAK_MINUTES=0.2 swift run productivity_break       # full flow after ~12 s of focus
 ```
+
+### Command-line flags
+
+| Flag | What it does |
+|------|--------------|
+| `--test` | Show a break immediately, then exit. |
+| `--help`, `-h` | Print usage (all flags + env vars + examples) and exit. |
+| `--validate-config` | Print the resolved configuration and exit non-zero on bad input. Headless / CI-safe. |
+| `--version` | Print the version and exit. |
 
 ## Install as a background tool (auto-start at login)
 
 ```bash
-./Scripts/install.sh
+./Scripts/install.sh      # build + register a launchd login agent
+./Scripts/uninstall.sh    # stop + remove it
 ```
 
-This builds a release binary, copies it to
+`install.sh` builds a release binary, copies it to
 `~/Library/Application Support/productivity_break/`, and registers a `launchd`
-login agent (`com.productivity_break.agent`) that runs quietly in the
-background — no Dock icon, no menu-bar item. It starts immediately and again at
-every login.
+agent (`com.productivity_break.agent`) that runs quietly in the background — no
+Dock icon — starting immediately and at every login.
 
-Remove it any time:
+## How the focus timer works
 
-```bash
-./Scripts/uninstall.sh
-```
+- **Continuous focus** — the clock ticks only while a terminal app is the
+  frontmost window. Switch away → it **pauses** (does not reset); switch back →
+  it resumes.
+- **Idle pause** — no keyboard/mouse input for `…_IDLE_SECONDS` (default 60s)
+  also pauses the clock, so stepping away doesn't count.
+- **Defer** — if the break comes due while a call/presentation app is frontmost,
+  it's postponed (not reset) until you're back.
+- During a break the overlay briefly takes keyboard focus (so the controls work)
+  and restores your previous app afterward.
 
-## Bring your own images / GIFs (API key)
+## Break visuals
 
-Prefer your own photo/GIF source? Drop in a free API key and the break visual is
-fetched from that provider instead — still **themed to the message** (a quote
-about the sea → "ocean waves", etc.) and with safe content ratings.
+By default the break draws a built-in **vector animal** — works offline, ships
+in the binary. Beyond that, in order of precedence:
+
+1. **A pinned local file** — set `PRODUCTIVITY_BREAK_VIDEO=/path/to/file`
+   (mp4/mov/image/GIF), or drop a `productivity_break.<ext>` next to the binary,
+   in `~/Library/Application Support/productivity_break/`, or in `./Resources/`.
+   Any aspect ratio is auto-fit.
+2. **Your own provider** — set an API key (below) to fetch themed photos/GIFs.
+3. **Free themed scenery** — fetched from [Openverse](https://openverse.org)
+   (no key), matched to the message; opt-in anime art via
+   `PRODUCTIVITY_BREAK_ANIME=on`.
+4. **The vector animal** — the always-available fallback.
+
+### Bring your own images / GIFs (API key)
+
+Drop in a free API key and break visuals come from that provider, still **themed
+to the message** and with safe content ratings:
 
 | Provider | Key env var | Get a free key |
 |----------|-------------|----------------|
@@ -79,112 +117,83 @@ about the sea → "ocean waves", etc.) and with safe content ratings.
 PRODUCTIVITY_BREAK_UNSPLASH_KEY=your_key swift run productivity_break --test
 ```
 
-Set the key as an env var or in `config.json`. If several are set, one is chosen
-at random per break. If a provider call fails (or no key is set), it falls back
-to the free Openverse source, then your local image, then the built-in cat — so
-a break always shows something.
+If several keys are set, one provider is chosen at random per break. On any
+failure it falls back to Openverse → your local file → the vector animal.
 
-## Optional: a break video
-
-By default productivity_break draws its own vector animal. To play a looping
-video instead, drop one in and it'll be picked up automatically.
-
-### Use your own video
+### A sample "floating cat" clip
 
 ```bash
-PRODUCTIVITY_BREAK_VIDEO=/path/to/your.mp4 swift run productivity_break --test
+./Scripts/fetch-video.sh     # downloads productivity_break.mp4 for personal use
 ```
 
-Any aspect ratio works (portrait, landscape, square) — the video's real
-dimensions are detected and it's scaled to fit the screen.
+> ⚠️ The sample clip ([source pin](https://in.pinterest.com/pin/2251868559305065/))
+> is third-party artwork, **not** included in this repo (it's git-ignored).
+> `fetch-video.sh` downloads it locally for personal use — make sure you have the
+> right to use any media you add.
 
-You can also place a file named `productivity_break.mp4` in any of these spots
-(checked in order) instead of setting the env var:
+## Break messages
 
-1. next to the binary (the install dir)
-2. `~/Library/Application Support/productivity_break/productivity_break.mp4`
-3. `./Resources/productivity_break.mp4` (when running from a checkout)
+Each break shows a random **quote / fun fact / advice** fetched from free public
+APIs (ZenQuotes, dummyjson, uselessfacts, adviceslip). Turn it off with
+`PRODUCTIVITY_BREAK_QUOTES=off` (uses a built-in local pool), or supply your own
+with `PRODUCTIVITY_BREAK_MESSAGES="Stretch!|Hydrate|Look away"`.
 
-### The sample "floating cat" clip
-
-A nice sample is the floating-cat clip
-([source pin](https://in.pinterest.com/pin/2251868559305065/)):
-
-```bash
-./Scripts/fetch-video.sh        # downloads productivity_break.mp4 for personal use
-```
-
-> ⚠️ **That video is third-party artwork and is *not* included in this
-> repository** (it's git-ignored). `fetch-video.sh` downloads it locally for
-> your personal use only — please make sure you have the right to use any clip
-> you add.
-
-## Dynamic break content
-
-Every break is different. When the overlay appears it fetches, on the fly:
-
-- **A fresh message** — a famous quote, a fun fact, or a piece of advice pulled
-  at random from free public APIs (ZenQuotes, dummyjson, uselessfacts,
-  adviceslip). Set `PRODUCTIVITY_BREAK_QUOTES=off` to use the built-in local
-  pool instead, or `PRODUCTIVITY_BREAK_MESSAGES="a|b|c"` to supply your own.
-
-- **A matching visual** — a theme is derived from that message (e.g. a message
-  about the sea → *ocean waves*; about stars → *starry night sky*; otherwise a
-  random calming landscape) and a relevant image is fetched from
-  [Openverse](https://openverse.org). Set `PRODUCTIVITY_BREAK_VISUALS=off` to
-  use the local image instead. Set `PRODUCTIVITY_BREAK_ANIME=on` to also mix in
-  anime art now and then (off by default — that source returns character art
-  that can be stylized/suggestive).
-
-Both fetches are async with short timeouts and **graceful fallbacks**: if you're
-offline or a source is slow, the message falls back to the local pool and the
-visual falls back to your local file, then to the built-in vector cat. So a
-break always works, online or not.
-
-> Content is **pre-fetched ahead of time** on a jittered ~10-minute timer and cached, so the break appears instantly and the network activity isn't tied to your break cadence. These features make outbound HTTPS requests to the APIs above
-> (no personal data is sent). Turn them off with the `*_QUOTES=off` /
-> `*_VISUALS=off` switches if you prefer a fully offline tool.
+> Messages and visuals are **pre-fetched on a jittered ~10-minute timer** and
+> cached, so a break is instant and the network activity isn't tied to your
+> break cadence. No personal data is sent. Set `…_QUOTES=off` and `…_VISUALS=off`
+> for a fully offline tool.
 
 ## Configuration
 
-You can configure productivity_break three ways, in increasing precedence:
+Configuration is layered, in increasing precedence:
 
-1. **Built-in defaults**
-2. **A config file** — `~/.config/productivity_break/config.json` (JSON object;
-   keys are the env-var names below, values are strings/numbers/bools/arrays).
-   See [`config.example.json`](config.example.json). Invalid/missing files are
+1. Built-in defaults
+2. `~/.config/productivity_break/config.json` — a JSON object whose keys are the
+   env-var names below (values may be strings, numbers, bools, or arrays). See
+   [`config.example.json`](config.example.json). Missing/invalid files are
    ignored with a warning.
-3. **Environment variables** — always win over the file.
+3. Environment variables — always win.
 
-Run `productivity_break --help` for the full list, and `--validate-config` to
-print the resolved configuration (and catch typos) without launching anything.
+Run `--validate-config` to see the resolved values. When installed as a login
+agent, you can also edit the `EnvironmentVariables` block of
+`~/Library/LaunchAgents/com.productivity_break.agent.plist` and re-run
+`install.sh`.
 
+**Timing**
 
-Set these as environment variables (or edit the `EnvironmentVariables` block in
-the installed `~/Library/LaunchAgents/com.productivity_break.agent.plist`, then
-re-run `install.sh`):
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `BREAK_MINUTES` | `25` | Focused minutes before a break appears |
+| `PRODUCTIVITY_BREAK_SHOW_SECONDS` | `8` | How long the break stays on screen |
+| `PRODUCTIVITY_BREAK_POLL_SECONDS` | `5` | How often focus is checked |
+| `PRODUCTIVITY_BREAK_IDLE_SECONDS` | `60` | Input-idle seconds that pause the clock |
+| `PRODUCTIVITY_BREAK_SNOOZE_MINUTES` | `5` | Re-arm delay when you press `S` |
 
-| Variable                          | Default | Meaning                                            |
-|-----------------------------------|---------|----------------------------------------------------|
-| `BREAK_MINUTES`                   | `25`    | Focused-terminal minutes before the break appears  |
-| `PRODUCTIVITY_BREAK_SHOW_SECONDS` | `8`     | How long the overlay stays on screen               |
-| `PRODUCTIVITY_BREAK_POLL_SECONDS` | `5`     | How often focus is checked                         |
-| `PRODUCTIVITY_BREAK_IDLE_SECONDS` | `60`    | Input-idle seconds that pause the focus clock      |
-| `PRODUCTIVITY_BREAK_SNOOZE_MINUTES`| `5`     | Re-arm delay when you press `S` to snooze          |
-| `PRODUCTIVITY_BREAK_MENUBAR`      | (off)   | `on` shows a ☕ menu-bar control                    |
-| `PRODUCTIVITY_BREAK_STYLE`        | `overlay` | `overlay` (full-screen) or `notify` (a macOS notification, no takeover) |
-| `PRODUCTIVITY_BREAK_UNSPLASH_KEY` | (unset) | Unsplash API key — fetch themed photos from your account |
-| `PRODUCTIVITY_BREAK_PEXELS_KEY`   | (unset) | Pexels API key — themed photos |
-| `PRODUCTIVITY_BREAK_GIPHY_KEY`    | (unset) | Giphy API key — themed GIFs |
-| `PRODUCTIVITY_BREAK_TENOR_KEY`    | (unset) | Tenor API key — themed GIFs |
-| `PRODUCTIVITY_BREAK_DEFER_APPS`   | (calls) | Comma-separated apps during which a due break waits |
-| `PRODUCTIVITY_BREAK_OVERLAY_ALPHA`| `0.92`  | Background dimming (0 = clear, 1 = opaque black)   |
-| `PRODUCTIVITY_BREAK_QUOTES`       | (on)    | Set to `off` to use only local messages (no network) |
-| `PRODUCTIVITY_BREAK_MESSAGES`     | (none)  | Your own message pool, separated by `\|` — overrides the online fetch |
-| `PRODUCTIVITY_BREAK_VISUALS`      | (on)    | Set to `off` to skip fetching a matching image (use the local visual) |
-| `PRODUCTIVITY_BREAK_ANIME`        | (off)   | Set to `on` to occasionally use anime art (nekos.best) as the visual |
-| `PRODUCTIVITY_BREAK_VIDEO`        | (auto)  | Path to a video. Auto-discovered from the repo's `Resources/`, the install dir, etc. |
-| `PRODUCTIVITY_BREAK_TERMINAL_APPS`| `Terminal,iTerm,Warp,Alacritty,kitty,Hyper,WezTerm,Ghostty` | Comma-separated app names that count as "the terminal" (matched as case-insensitive substrings) |
+**Appearance & behavior**
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `PRODUCTIVITY_BREAK_STYLE` | `overlay` | `overlay` (full-screen) or `notify` (a notification) |
+| `PRODUCTIVITY_BREAK_OVERLAY_ALPHA` | `0.92` | Background dimming (0 = clear, 1 = opaque) |
+| `PRODUCTIVITY_BREAK_MENUBAR` | `off` | `on` shows a ☕ menu-bar control |
+| `PRODUCTIVITY_BREAK_DEFER_APPS` | _(call apps)_ | Comma-separated apps during which a due break waits |
+| `PRODUCTIVITY_BREAK_TERMINAL_APPS` | _(common terminals)_ | Comma-separated app-name substrings counted as "terminal" |
+
+**Break content**
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `PRODUCTIVITY_BREAK_QUOTES` | `on` | `off` → local messages only (no network) |
+| `PRODUCTIVITY_BREAK_MESSAGES` | _(unset)_ | Your own messages, separated by `\|` (overrides the fetch) |
+| `PRODUCTIVITY_BREAK_VISUALS` | `on` | `off` → skip image fetch (use the local/vector visual) |
+| `PRODUCTIVITY_BREAK_ANIME` | `off` | `on` → occasionally use anime art (nekos.best, SFW) |
+| `PRODUCTIVITY_BREAK_VIDEO` | _(auto)_ | Path to a pinned local visual (mp4/mov/image/GIF) |
+| `PRODUCTIVITY_BREAK_UNSPLASH_KEY` | _(unset)_ | Unsplash API key — themed photos |
+| `PRODUCTIVITY_BREAK_PEXELS_KEY` | _(unset)_ | Pexels API key — themed photos |
+| `PRODUCTIVITY_BREAK_GIPHY_KEY` | _(unset)_ | Giphy API key — themed GIFs |
+| `PRODUCTIVITY_BREAK_TENOR_KEY` | _(unset)_ | Tenor API key — themed GIFs |
+
+Booleans accept `on/off`, `true/false`, `yes/no`, `1/0`.
 
 ## Project layout
 
@@ -194,33 +203,37 @@ productivity_break/
 ├── Sources/productivity_break/main.swift      # the whole program
 ├── Scripts/
 │   ├── install.sh / uninstall.sh              # set up / tear down the login agent
-│   └── fetch-video.sh                         # download the optional sample video
+│   └── fetch-video.sh                         # download the optional sample clip
 ├── packaging/com.productivity_break.agent.plist  # launchd template
-├── Resources/productivity_break.mp4           # optional video (git-ignored, not published)
-└── .github/workflows/build.yml                # CI: builds on macOS
+├── config.example.json                        # example config file
+├── Resources/productivity_break.*             # optional media (git-ignored)
+├── .github/
+│   ├── workflows/build.yml                    # CI: builds on macOS
+│   ├── ISSUE_TEMPLATE/                         # bug report / feature request
+│   └── PULL_REQUEST_TEMPLATE.md
+├── CONTRIBUTING.md · CODE_OF_CONDUCT.md · LICENSE
+└── README.md
 ```
 
 ## Building manually
 
 ```bash
 swift build -c release          # -> .build/release/productivity_break
-# check your configuration without launching the GUI:
-./.build/release/productivity_break --validate-config
 # or a single-file build:
 swiftc -O Sources/productivity_break/main.swift -o productivity_break
 ```
 
 ## Contributing
 
-Contributions are welcome! Fork the repo, make your change in
+Contributions welcome! Fork the repo, make your change in
 `Sources/productivity_break/main.swift`, and open a pull request. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for build/run steps and guidelines, and
+[CONTRIBUTING.md](CONTRIBUTING.md) for build/run steps and project goals, and
 please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Good first contributions: new break-message sources, additional terminal apps in
-the default list, accessibility improvements (Reduce Motion), or a Settings UI.
+Good first issues: more break-message sources, additional default terminal apps,
+accessibility (Reduce Motion), or a Settings UI.
 
 ## License
 
 MIT — see [LICENSE](LICENSE). The license covers the **source code**; any
-optional break video is third-party and is not distributed with this repo.
+optional break media is third-party and is not distributed with this repo.
