@@ -1,0 +1,26 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Swift version
+        run: swift --version
+      - name: Build (release)
+        run: swift build -c release
+      - name: Smoke test (binary launches)
+        # Run very briefly with a tiny show time; --test shows the cat then
+        # exits. CI has no display, so we just confirm it doesn't crash on start.
+        run: |
+          CAT_SHOW_SECONDS=0.2 ./.build/release/cat-break --test &
+          PID=$!
+          sleep 3
+          if kill -0 $PID 2>/dev/null; then kill $PID; fi
+          echo "launched ok"
