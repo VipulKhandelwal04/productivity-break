@@ -20,8 +20,11 @@ box. You can optionally swap in a looping **video** (see below).
   reset); switch back and it resumes counting.
 - **Idle pause** — if you stop typing/moving the mouse for `PRODUCTIVITY_BREAK_IDLE_SECONDS` (default 60s), the clock pauses too, so stepping away from a focused terminal doesn't count (no Accessibility permission needed).
 - After 25 min the break appears, auto-fades after ~8 s, and the timer resets.
-- Click anywhere (or just wait) to dismiss the overlay.
-- Uses `NSWorkspace` for focus detection — **no Accessibility permission needed**.
+- **Covers every monitor** — all displays dim; the visual + message appear on the main screen.
+- **Defers around calls** — a due break is postponed (not reset) while a call/recording/presentation app is frontmost (`PRODUCTIVITY_BREAK_DEFER_APPS`).
+- **Controls** — click / `Esc` / `Space` to dismiss, or `S` to **snooze** (re-arm in `PRODUCTIVITY_BREAK_SNOOZE_MINUTES` without losing the whole cycle). A countdown shows how long is left. Accidental clicks during the slide-in are ignored.
+- Uses `NSWorkspace` for focus detection — **no Accessibility permission needed**. (The overlay briefly takes keyboard focus during the break so the controls work, then restores your previous app.)
+- **Optional menu-bar control** — set `PRODUCTIVITY_BREAK_MENUBAR=on` for a ☕ status item (status / take a break now / pause / quit). Off by default.
 
 ## Requirements
 
@@ -114,7 +117,7 @@ offline or a source is slow, the message falls back to the local pool and the
 visual falls back to your local file, then to the built-in vector cat. So a
 break always works, online or not.
 
-> These features make outbound HTTPS requests to the APIs above at each break
+> Content is **pre-fetched ahead of time** on a jittered ~10-minute timer and cached, so the break appears instantly and the network activity isn't tied to your break cadence. These features make outbound HTTPS requests to the APIs above
 > (no personal data is sent). Turn them off with the `*_QUOTES=off` /
 > `*_VISUALS=off` switches if you prefer a fully offline tool.
 
@@ -130,6 +133,9 @@ re-run `install.sh`):
 | `PRODUCTIVITY_BREAK_SHOW_SECONDS` | `8`     | How long the overlay stays on screen               |
 | `PRODUCTIVITY_BREAK_POLL_SECONDS` | `5`     | How often focus is checked                         |
 | `PRODUCTIVITY_BREAK_IDLE_SECONDS` | `60`    | Input-idle seconds that pause the focus clock      |
+| `PRODUCTIVITY_BREAK_SNOOZE_MINUTES`| `5`     | Re-arm delay when you press `S` to snooze          |
+| `PRODUCTIVITY_BREAK_MENUBAR`      | (off)   | `on` shows a ☕ menu-bar control                    |
+| `PRODUCTIVITY_BREAK_DEFER_APPS`   | (calls) | Comma-separated apps during which a due break waits |
 | `PRODUCTIVITY_BREAK_OVERLAY_ALPHA`| `0.92`  | Background dimming (0 = clear, 1 = opaque black)   |
 | `PRODUCTIVITY_BREAK_QUOTES`       | (on)    | Set to `off` to use only local messages (no network) |
 | `PRODUCTIVITY_BREAK_MESSAGES`     | (none)  | Your own message pool, separated by `\|` — overrides the online fetch |

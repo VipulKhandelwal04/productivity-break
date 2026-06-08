@@ -146,12 +146,23 @@ final class DimView: NSView {
     var bob: CGFloat = 0
     var useVectorArt = false
     var contentRect: NSRect = .zero   // main-screen region (layout target); .zero -> bounds
+    var hintText = ""                  // dismiss/snooze hint + countdown
     weak var controller: OverlayController?
 
     override var isFlipped: Bool { false }   // origin bottom-left, y grows upward
 
+    override var acceptsFirstResponder: Bool { true }
+
     override func mouseDown(with event: NSEvent) {
         controller?.dismiss()         // click anywhere to dismiss early
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 53, 49: controller?.dismiss()              // Esc or Space
+        case 1:      controller?.dismiss(snooze: true)  // S = snooze
+        default:     break                              // swallow (no beep)
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -161,6 +172,7 @@ final class DimView: NSView {
 
         let c = contentRect.width > 0 ? contentRect : bounds   // lay out on the main screen
         drawMessage(in: c)
+        drawHint(in: c)
 
         if useVectorArt {
             NSGraphicsContext.saveGraphicsState()
@@ -202,6 +214,25 @@ final class DimView: NSView {
         let y = b.minY + b.height * 0.9 - measured.height / 2
         msg.draw(with: NSRect(x: b.minX + (b.width - boxW) / 2, y: y, width: boxW, height: measured.height),
                  options: [.usesLineFragmentOrigin], attributes: attrs(fontSize))
+    }
+
+    private func drawHint(in b: NSRect) {
+        guard !hintText.isEmpty else { return }
+        let para = NSMutableParagraphStyle(); para.alignment = .center
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.85); shadow.shadowBlurRadius = 8
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: max(12, b.height / 55), weight: .medium),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.85),
+            .paragraphStyle: para, .shadow: shadow,
+        ]
+        let t = hintText as NSString
+        let boxW = b.width * 0.8
+        let m = t.boundingRect(with: NSSize(width: boxW, height: 200),
+                               options: [.usesLineFragmentOrigin], attributes: attrs)
+        t.draw(with: NSRect(x: b.minX + (b.width - boxW) / 2, y: b.minY + b.height * 0.045,
+                            width: boxW, height: m.height),
+               options: [.usesLineFragmentOrigin], attributes: attrs)
     }
 
     // ----- the hand-drawn vector animal (default) -----
@@ -284,6 +315,13 @@ final class DimView: NSView {
 // ---------------------------------------------------------------------------
 // Overlay window + animation
 // ---------------------------------------------------------------------------
+// A borderless window normally can't become key; allow it so the overlay can
+// receive keyboard input (Esc / Space / S) during the break.
+final class KeyableWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 final class OverlayController {
     enum Phase { case fadingIn, holding, fadingOut }
 
@@ -296,6 +334,9 @@ final class OverlayController {
 
     private var phase: Phase = .fadingIn
     private var phaseStart = Date()
+    private var lastRemaining = -1
+    private var previousApp: NSRunningApplication?
+    var snoozeRequested = false
     private let startOffset: CGFloat
     private let restY: CGFloat
     private let bobAmp: CGFloat
@@ -315,7 +356,7 @@ final class OverlayController {
         let content = NSRect(x: mainFrame.origin.x - union.origin.x,
                              y: mainFrame.origin.y - union.origin.y,
                              width: mainFrame.width, height: mainFrame.height)
-        window = NSWindow(contentRect: union, styleMask: .borderless,
+        window = KeyableWindow(contentRect: union, styleMask: .borderless,
                           backing: .buffered, defer: false)
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -352,7 +393,9 @@ final class OverlayController {
 
             if isImageURL(url) {
                 let iv = NSImageView(frame: container.bounds)
-                iv.image = NSImage(contentsOf: url)
+                // Load bytes into memory now so a later prefetch overwriting the
+                // temp file can't affect what's on screen. (Animates GIFs too.)
+                iv.image = (try? Data(contentsOf: url)).flatMap { NSImage(data: $0) } ?? NSImage(contentsOf: url)
                 iv.imageScaling = .scaleProportionallyUpOrDown
                 iv.animates = true                 // animates GIFs
                 iv.autoresizingMask = [.width, .height]
@@ -387,7 +430,11 @@ final class OverlayController {
     }
 
     func show() {
+        previousApp = NSWorkspace.shared.frontmostApplication
         window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(view)
         player?.play()
         phase = .fadingIn
         phaseStart = Date()
@@ -396,8 +443,10 @@ final class OverlayController {
         timer = t
     }
 
-    func dismiss() {
+    func dismiss(snooze: Bool = false) {
+        if phase == .fadingIn { return }   // ignore clicks/keys during the slide-in
         if phase != .fadingOut {
+            snoozeRequested = snooze
             phase = .fadingOut
             phaseStart = Date()
         }
@@ -429,6 +478,12 @@ final class OverlayController {
             }
         case .holding:
             place(offset: 0, bob: CGFloat(sin(e * 2.2)) * bobAmp)
+            let remaining = max(0, Int(ceil(SHOW_SECONDS - e)))
+            if remaining != lastRemaining {
+                lastRemaining = remaining
+                view.hintText = "\(remaining)s  ·  Esc / click to dismiss  ·  S to snooze"
+                view.needsDisplay = true
+            }
             if e >= SHOW_SECONDS {
                 phase = .fadingOut
                 phaseStart = Date()
@@ -439,6 +494,7 @@ final class OverlayController {
                 timer?.invalidate(); timer = nil
                 player?.pause()
                 window.orderOut(nil)
+                previousApp?.activate(options: [])
                 onDone?()
                 return
             }
@@ -457,6 +513,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var presenting = false
     private var paused = false
     private var statusItem: NSStatusItem?
+    private var cachedMessage: String?       // pre-fetched ahead of time so the
+    private var cachedMediaURL: URL?         // break is instant & doesn't leak cadence
+    private var prefetchTimer: Timer?
     private let testMode: Bool
 
     init(testMode: Bool) { self.testMode = testMode }
@@ -475,6 +534,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let t = Timer(timeInterval: POLL_SECONDS, repeats: true) { [weak self] _ in self?.poll() }
         RunLoop.main.add(t, forMode: .common)
         monitor = t
+        prefetch()              // warm content now...
+        scheduleNextPrefetch()  // ...and refresh on a jittered timer (decoupled from breaks)
+    }
+
+    // Fetch a message + matching visual ahead of time so the break can appear
+    // instantly and the network activity isn't tied to your break cadence.
+    private func prefetch() {
+        fetchBreakMessage { [weak self] msg in
+            guard let self = self else { return }
+            self.fetchBreakImage(for: msg) { [weak self] url in
+                self?.cachedMessage = msg
+                self?.cachedMediaURL = url
+            }
+        }
+    }
+
+    private func scheduleNextPrefetch() {
+        let delay = max(60.0, 600.0 + Double.random(in: -150...240))   // ~7.5–14 min, jittered
+        prefetchTimer?.invalidate()
+        let t = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            self?.prefetch()
+            self?.scheduleNextPrefetch()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        prefetchTimer = t
     }
 
     // Opt-in menu-bar control (PRODUCTIVITY_BREAK_MENUBAR=on). Default off keeps
@@ -583,25 +667,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         presenting = true
-        fetchBreakMessage { [weak self] msg in
-            guard let self = self else { return }
+        if let msg = cachedMessage {                       // instant: use pre-fetched content
+            let url = cachedMediaURL
+            cachedMessage = nil; cachedMediaURL = nil
             FileHandle.standardError.write("[productivity_break] break message: \(msg)\n".data(using: .utf8)!)
-            self.fetchBreakImage(for: msg) { [weak self] mediaURL in
+            presentBreak(message: msg, mediaURL: url)
+            prefetch()                                     // warm the next one
+        } else {                                           // cold: fetch live
+            fetchBreakMessage { [weak self] msg in
                 guard let self = self else { return }
-                let oc = OverlayController(message: msg, mediaURL: mediaURL)
-                oc.onDone = { [weak self] in
+                FileHandle.standardError.write("[productivity_break] break message: \(msg)\n".data(using: .utf8)!)
+                self.fetchBreakImage(for: msg) { [weak self] mediaURL in
                     guard let self = self else { return }
-                    self.overlay = nil
-                    self.presenting = false
-                    self.focused = 0
-                    self.lastTick = Date()
-                    cleanupTempVisuals()
-                    if self.testMode { NSApp.terminate(nil) }
+                    self.presentBreak(message: msg, mediaURL: mediaURL)
+                    self.prefetch()
                 }
-                self.overlay = oc
-                oc.show()
             }
         }
+    }
+
+    private func presentBreak(message: String, mediaURL: URL?) {
+        let oc = OverlayController(message: message, mediaURL: mediaURL)
+        oc.onDone = { [weak self, weak oc] in
+            guard let self = self else { return }
+            let snoozed = oc?.snoozeRequested ?? false
+            self.overlay = nil
+            self.presenting = false
+            // Snooze: re-arm in SNOOZE_MINUTES instead of nuking the cycle.
+            self.focused = snoozed ? max(0, THRESHOLD - SNOOZE_MINUTES * 60.0) : 0
+            self.lastTick = Date()
+            if snoozed {
+                FileHandle.standardError.write("[productivity_break] snoozed — back in ~\(Int(SNOOZE_MINUTES)) min.\n".data(using: .utf8)!)
+            }
+            if self.testMode { NSApp.terminate(nil) }
+        }
+        self.overlay = oc
+        oc.show()
     }
 
     // Fetch a fresh quote / fun fact / piece of advice from a free public API,
@@ -777,7 +878,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func fetchAnimeImage(completion: @escaping (URL?) -> Void) {
-        let cats = ["neko", "waifu", "husbando", "kitsune"]
+        let cats = ["neko", "kitsune"]   // nekos.best is SFW-only; keep the tamer categories
         let cat = cats.randomElement() ?? "neko"
         FileHandle.standardError.write("[productivity_break] visual theme: anime/\(cat)\n".data(using: .utf8)!)
         guard let url = URL(string: "https://nekos.best/api/v2/\(cat)") else { completion(nil); return }
