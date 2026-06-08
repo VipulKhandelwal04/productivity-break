@@ -399,6 +399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastTick = Date()
     private var overlay: OverlayController?
     private var monitor: Timer?
+    private var presenting = false
     private let testMode: Bool
 
     init(testMode: Bool) { self.testMode = testMode }
@@ -428,7 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let now = Date()
         let dt = now.timeIntervalSince(lastTick)
         lastTick = now
-        if overlay != nil { return }          // overlay is on screen; don't count or re-trigger
+        if overlay != nil || presenting { return }   // break is up or being prepared
         if terminalFocused() {
             focused += dt
             if focused >= THRESHOLD {
@@ -442,17 +443,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showBreak() {
-        let msg = "Break time! You've been heads-down for \(fmt(BREAK_MINUTES)) min — go find a spot in nature."
-        let oc = OverlayController(message: msg)
-        oc.onDone = { [weak self] in
+        presenting = true
+        fetchBreakMessage { [weak self] msg in
             guard let self = self else { return }
-            self.overlay = nil
-            self.focused = 0
-            self.lastTick = Date()
-            if self.testMode { NSApp.terminate(nil) }
+            FileHandle.standardError.write("[productivity_break] break message: \(msg)\n".data(using: .utf8)!)
+            let oc = OverlayController(message: msg)
+            oc.onDone = { [weak self] in
+                guard let self = self else { return }
+                self.overlay = nil
+                self.presenting = false
+                self.focused = 0
+                self.lastTick = Date()
+                if self.testMode { NSApp.terminate(nil) }
+            }
+            self.overlay = oc
+            oc.show()
         }
-        overlay = oc
-        oc.show()
+    }
+
+    // Fetch a fresh quote / fun fact / piece of advice from a free public API,
+    // chosen at random, so the break message changes every time. The call is
+    // async with a short timeout and falls back to a local break message.
+    //   - Disable all network with PRODUCTIVITY_BREAK_QUOTES=off
+    //   - Use your own pool with PRODUCTIVITY_BREAK_MESSAGES (separated by "|")
+    private func fetchBreakMessage(completion: @escaping (String) -> Void) {
+        if let custom = ENV["PRODUCTIVITY_BREAK_MESSAGES"] {
+            let list = custom.split(separator: "|")
+                .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            if let pick = list.randomElement() { completion(pick); return }
+        }
+        if (ENV["PRODUCTIVITY_BREAK_QUOTES"] ?? "").lowercased() == "off" {
+            completion(localBreakMessage()); return
+        }
+        struct Source { let url: String; let parse: (Any) -> String? }
+        let sources: [Source] = [
+            Source(url: "https://zenquotes.io/api/random") { json in
+                guard let arr = json as? [[String: Any]], let f = arr.first,
+                      let q = f["q"] as? String, let a = f["a"] as? String else { return nil }
+                return "\u{201C}\(q.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D} \u{2014} \(a)"
+            },
+            Source(url: "https://dummyjson.com/quotes/random") { json in
+                guard let obj = json as? [String: Any], let q = obj["quote"] as? String,
+                      let a = obj["author"] as? String else { return nil }
+                return "\u{201C}\(q)\u{201D} \u{2014} \(a)"
+            },
+            Source(url: "https://uselessfacts.jsph.pl/api/v2/facts/random?language=en") { json in
+                guard let obj = json as? [String: Any], let t = obj["text"] as? String else { return nil }
+                return "Fun fact: \(t)"
+            },
+            Source(url: "https://api.adviceslip.com/advice") { json in
+                guard let obj = json as? [String: Any], let slip = obj["slip"] as? [String: Any],
+                      let a = slip["advice"] as? String else { return nil }
+                return "\u{1F4A1} \(a)"
+            },
+        ]
+        guard let src = sources.randomElement(), let url = URL(string: src.url) else {
+            completion(localBreakMessage()); return
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 4
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("productivity_break/1.0", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            var result: String?
+            if let data = data, let json = try? JSONSerialization.jsonObject(with: data) {
+                result = src.parse(json)
+            }
+            let final = result ?? (self?.localBreakMessage() ?? "Time for a break.")
+            DispatchQueue.main.async { completion(final) }
+        }.resume()
+    }
+
+    // Offline fallback pool (break-focused).
+    private func localBreakMessage() -> String {
+        let m = fmt(BREAK_MINUTES)
+        let messages = [
+            "Break time! You've been heads-down for \(m) min \u{2014} go find a spot in nature.",
+            "Time to step away. Stretch, breathe, and drop your shoulders.",
+            "Rest your eyes \u{2014} look at something 20 feet away for 20 seconds.",
+            "Hydrate! Go grab a glass of water. \u{1F4A7}",
+            "\(m) minutes of focus \u{2014} you've earned a real break. Stand up!",
+            "Unclench your jaw, relax your shoulders, take a deep breath. \u{1F9D8}",
+            "Take five. The code will still be here when you get back.",
+            "Screen break! Let your eyes wander somewhere far away.",
+        ]
+        return messages.randomElement() ?? messages[0]
     }
 
     private func fmt(_ x: Double) -> String {
