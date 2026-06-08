@@ -61,6 +61,17 @@ let POLL_SECONDS    = max(0.5, envDouble("PRODUCTIVITY_BREAK_POLL_SECONDS", 5)) 
 let OVERLAY_ALPHA   = min(1.0, max(0.0, envDouble("PRODUCTIVITY_BREAK_OVERLAY_ALPHA", 0.92)))  // background dimming
 let IDLE_SECONDS    = max(5.0, envDouble("PRODUCTIVITY_BREAK_IDLE_SECONDS", 60)) // input-idle time that pauses the focus clock
 let THRESHOLD       = max(1.0, BREAK_MINUTES * 60.0)
+let SNOOZE_MINUTES  = max(0.05, envDouble("PRODUCTIVITY_BREAK_SNOOZE_MINUTES", 5))  // re-arm delay when snoozed
+
+let APP_VERSION = "0.2.0"
+// Generic, non-identifying User-Agent (no app name/version) for the content APIs.
+let HTTP_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
+
+// Apps during which a due break is postponed (not reset) — calls, screen shares,
+// recording. Matched as case-insensitive substrings of the frontmost app name.
+let DEFER_APPS: [String] = (ENV["PRODUCTIVITY_BREAK_DEFER_APPS"]
+    ?? "zoom,Microsoft Teams,Webex,FaceTime,OBS Studio,QuickTime Player,ScreenFlow,Loom,Keynote")
+    .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty }
 
 let TERMINAL_APPS: [String] = (ENV["PRODUCTIVITY_BREAK_TERMINAL_APPS"]
     ?? "Terminal,iTerm,Warp,Alacritty,kitty,Hyper,WezTerm,Ghostty")
@@ -134,6 +145,7 @@ final class DimView: NSView {
     var slideOffset: CGFloat = 0     // used by the vector art
     var bob: CGFloat = 0
     var useVectorArt = false
+    var contentRect: NSRect = .zero   // main-screen region (layout target); .zero -> bounds
     weak var controller: OverlayController?
 
     override var isFlipped: Bool { false }   // origin bottom-left, y grows upward
@@ -145,16 +157,17 @@ final class DimView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let b = bounds
         NSColor(calibratedWhite: 0.04, alpha: OVERLAY_ALPHA).setFill()
-        b.fill()
+        b.fill()                              // dim EVERY display
 
-        drawMessage(in: b)
+        let c = contentRect.width > 0 ? contentRect : bounds   // lay out on the main screen
+        drawMessage(in: c)
 
         if useVectorArt {
             NSGraphicsContext.saveGraphicsState()
             let t = NSAffineTransform()
             t.translateX(by: 0, yBy: -slideOffset + bob)
             t.concat()
-            drawProductivityBreak(in: b)
+            drawProductivityBreak(in: c)
             NSGraphicsContext.restoreGraphicsState()
         }
     }
@@ -186,8 +199,8 @@ final class DimView: NSView {
             fontSize -= 2
             measured = measure(fontSize)
         }
-        let y = b.height * 0.9 - measured.height / 2
-        msg.draw(with: NSRect(x: (b.width - boxW) / 2, y: y, width: boxW, height: measured.height),
+        let y = b.minY + b.height * 0.9 - measured.height / 2
+        msg.draw(with: NSRect(x: b.minX + (b.width - boxW) / 2, y: y, width: boxW, height: measured.height),
                  options: [.usesLineFragmentOrigin], attributes: attrs(fontSize))
     }
 
@@ -207,8 +220,8 @@ final class DimView: NSView {
         let dark    = NSColor(srgbRed: 0.227, green: 0.165, blue: 0.118, alpha: 1)
         let white   = NSColor.white
         let s = b.height / 20.0
-        let cx = b.width / 2.0
-        let feetY = b.height * 0.05
+        let cx = b.midX
+        let feetY = b.minY + b.height * 0.05
         let bodyCy = feetY + 4.2 * s
         let headCy = feetY + 10.2 * s
         let tail = NSBezierPath()
@@ -293,9 +306,16 @@ final class OverlayController {
     private let fadeOutDur = 0.5
 
     init(message: String, mediaURL: URL? = nil) {
-        let frame = (NSScreen.main ?? NSScreen.screens.first)?.frame
+        // Span ALL displays with one window so every monitor dims; lay the
+        // visual/message out on the main screen's region within that window.
+        let screens = NSScreen.screens
+        let mainFrame = (NSScreen.main ?? screens.first)?.frame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)   // safe fallback; showBreak() guards real use
-        window = NSWindow(contentRect: frame, styleMask: .borderless,
+        let union = screens.isEmpty ? mainFrame : screens.reduce(mainFrame) { $0.union($1.frame) }
+        let content = NSRect(x: mainFrame.origin.x - union.origin.x,
+                             y: mainFrame.origin.y - union.origin.y,
+                             width: mainFrame.width, height: mainFrame.height)
+        window = NSWindow(contentRect: union, styleMask: .borderless,
                           backing: .buffered, defer: false)
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -305,26 +325,25 @@ final class OverlayController {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         window.alphaValue = 0
 
-        view = DimView(frame: NSRect(origin: .zero, size: frame.size))
+        view = DimView(frame: NSRect(origin: .zero, size: union.size))
         view.message = message
+        view.contentRect = content
 
         // Try a break visual (video, image, or GIF), fitted into the lower ~84%
-        // of the screen (leaving a band at the top for the break banner). Fall
-        // back to the vector art if no media is available.
+        // of the MAIN screen (leaving a band at the top for the break banner).
+        // Fall back to the vector art if no media is available.
         var rest: CGFloat = 0
-        var startOff = frame.height * 1.12
+        var startOff = content.height * 1.12
         if let url = (mediaURL ?? resolveMediaURL()), mediaIsUsable(url) {
-            // Detect the media's actual size so ANY aspect ratio (portrait,
-            // landscape, square) fits nicely.
             let size = mediaNaturalSize(url)
             let vw = size.width, vh = size.height
-            let regionH = frame.height * 0.84
-            let availW = frame.width * 0.92
+            let regionH = content.height * 0.84
+            let availW = content.width * 0.92
             let scale = min(availW / vw, regionH / vh)
             let w = vw * scale, h = vh * scale
-            let x = (frame.width - w) / 2
-            rest = (regionH - h) / 2
-            startOff = rest + h
+            let x = content.minX + (content.width - w) / 2
+            rest = content.minY + (content.height - h) / 2
+            startOff = rest - (content.minY - h)     // start just below the main screen
 
             let container = NSView(frame: NSRect(x: x, y: rest, width: w, height: h))
             container.wantsLayer = true
@@ -361,7 +380,7 @@ final class OverlayController {
 
         restY = rest
         startOffset = startOff
-        bobAmp = frame.height * 0.004
+        bobAmp = content.height * 0.004
 
         window.contentView = view
         view.controller = self
@@ -430,12 +449,14 @@ final class OverlayController {
 // ---------------------------------------------------------------------------
 // App delegate: focus monitoring
 // ---------------------------------------------------------------------------
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var focused = 0.0
     private var lastTick = Date()
     private var overlay: OverlayController?
     private var monitor: Timer?
     private var presenting = false
+    private var paused = false
+    private var statusItem: NSStatusItem?
     private let testMode: Bool
 
     init(testMode: Bool) { self.testMode = testMode }
@@ -449,14 +470,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FileHandle.standardError.write(
             "[productivity_break] watching terminal focus — break appears after \(fmt(BREAK_MINUTES)) min of continuous focused use.\n"
                 .data(using: .utf8)!)
+        if envBool("PRODUCTIVITY_BREAK_MENUBAR", false) { setupMenuBar() }
         lastTick = Date()
         let t = Timer(timeInterval: POLL_SECONDS, repeats: true) { [weak self] _ in self?.poll() }
         RunLoop.main.add(t, forMode: .common)
         monitor = t
     }
 
+    // Opt-in menu-bar control (PRODUCTIVITY_BREAK_MENUBAR=on). Default off keeps
+    // the tool invisible. Works under .accessory (no Dock icon).
+    private func setupMenuBar() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.title = "☕"
+        let menu = NSMenu()
+        menu.delegate = self
+        statusItem = item
+        item.menu = menu
+        rebuildMenu()
+    }
+
+    private func rebuildMenu() {
+        guard let menu = statusItem?.menu else { return }
+        menu.removeAllItems()
+        let mins = Int(focused / 60.0)
+        let status = paused ? "Paused"
+            : "Focused: \(mins)/\(Int(BREAK_MINUTES)) min"
+        let s = NSMenuItem(title: status, action: nil, keyEquivalent: "")
+        s.isEnabled = false
+        menu.addItem(s)
+        menu.addItem(.separator())
+        let take = NSMenuItem(title: "Take a break now", action: #selector(takeBreakNow), keyEquivalent: "b")
+        let pause = NSMenuItem(title: paused ? "Resume" : "Pause", action: #selector(togglePause), keyEquivalent: "p")
+        take.target = self; pause.target = self
+        menu.addItem(take)
+        menu.addItem(pause)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit productivity_break", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        menu.addItem(quit)
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) { rebuildMenu() }
+
+    @objc private func takeBreakNow() {
+        guard overlay == nil && !presenting else { return }
+        showBreak(force: true)
+    }
+
+    @objc private func togglePause() {
+        paused.toggle()
+        if !paused { lastTick = Date() }   // don't credit the paused span
+        statusItem?.button?.title = paused ? "⏸" : "☕"
+    }
+
     func applicationWillTerminate(_ note: Notification) {
         cleanupTempVisuals()
+    }
+
+    // Postpone (don't reset) a due break while a call/recording/presentation app
+    // is frontmost, so we don't pop the overlay over a meeting or screen share.
+    private func shouldDefer() -> Bool {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return false }
+        let name = (app.localizedName ?? "").lowercased()
+        return DEFER_APPS.contains { name.contains($0) }
     }
 
     private func terminalFocused() -> Bool {
@@ -479,7 +555,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // into the counter and fire a break the instant the machine wakes.
         let dt = min(now.timeIntervalSince(lastTick), POLL_SECONDS * 2)
         lastTick = now
-        if overlay != nil || presenting { return }   // break is up or being prepared
+        if paused || overlay != nil || presenting { return }   // paused, break up, or being prepared
         // Only count time the terminal is focused AND the user is actually here.
         if terminalFocused() && !userIsIdle() {
             focused += dt
@@ -493,12 +569,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // not focused or idle -> pause: neither accumulate nor reset
     }
 
-    private func showBreak() {
+    private func showBreak(force: Bool = false) {
         guard (NSScreen.main ?? NSScreen.screens.first) != nil else {
             FileHandle.standardError.write("[productivity_break] no display available — skipping break.\n".data(using: .utf8)!)
             focused = 0
             lastTick = Date()
             if testMode { NSApp.terminate(nil) }
+            return
+        }
+        if !force && shouldDefer() {
+            FileHandle.standardError.write("[productivity_break] deferring break — a call/presentation app is active.\n".data(using: .utf8)!)
+            lastTick = Date()   // keep `focused`; retry on a later poll
             return
         }
         presenting = true
@@ -565,7 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var req = URLRequest(url: url)
         req.timeoutInterval = 4
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("productivity_break/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue(HTTP_UA, forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
             var result: String?
             if let data = data, let json = try? JSONSerialization.jsonObject(with: data) {
@@ -648,7 +729,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func downloadToTemp(_ url: URL, completion: @escaping (URL?) -> Void) {
         var req = URLRequest(url: url)
         req.timeoutInterval = 6
-        req.setValue("productivity_break/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue(HTTP_UA, forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: req) { data, _, _ in
             guard let data = data, data.count > 1024, NSImage(data: data) != nil else {
                 DispatchQueue.main.async { completion(nil) }; return
@@ -680,7 +761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let url = comps.url else { completion(nil); return }
         var req = URLRequest(url: url)
         req.timeoutInterval = 4
-        req.setValue("productivity_break/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue(HTTP_UA, forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
             guard let self = self, let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -702,7 +783,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let url = URL(string: "https://nekos.best/api/v2/\(cat)") else { completion(nil); return }
         var req = URLRequest(url: url)
         req.timeoutInterval = 4
-        req.setValue("productivity_break/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue(HTTP_UA, forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
             guard let self = self, let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -743,6 +824,11 @@ func validateConfig() -> Int32 {
     print("  QUOTES=\(envBool("PRODUCTIVITY_BREAK_QUOTES", true)) VISUALS=\(envBool("PRODUCTIVITY_BREAK_VISUALS", true)) ANIME=\(envBool("PRODUCTIVITY_BREAK_ANIME", false))")
     print(ok ? "OK" : "INVALID CONFIG")
     return ok ? 0 : 1
+}
+
+if CommandLine.arguments.contains("--version") {
+    print("productivity_break \(APP_VERSION)")
+    exit(0)
 }
 
 if CommandLine.arguments.contains("--validate-config") {
