@@ -10,5 +10,11 @@
   "PRODUCTIVITY_BREAK_VISUALS": true,
   "PRODUCTIVITY_BREAK_ANIME": false,
   "PRODUCTIVITY_BREAK_TERMINAL_APPS": ["Terminal", "iTerm", "Ghostty"],
-  "PRODUCTIVITY_BREAK_DEFER_APPS": ["zoom", "FaceTime", "Keynote"]
+  "PRODUCTIVITY_BREAK_DEFER_APPS": ["zoom", "FaceTime", "Keynote"],
+
+  "_comment_provider_keys": "Optional: set one to fetch visuals from your own account. Leave blank to use the free source.",
+  "PRODUCTIVITY_BREAK_UNSPLASH_KEY": "",
+  "PRODUCTIVITY_BREAK_PEXELS_KEY": "",
+  "PRODUCTIVITY_BREAK_GIPHY_KEY": "",
+  "PRODUCTIVITY_BREAK_TENOR_KEY": ""
 }

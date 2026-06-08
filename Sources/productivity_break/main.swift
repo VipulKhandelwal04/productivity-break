@@ -895,9 +895,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             || envString("PRODUCTIVITY_BREAK_VIDEO") != nil {
             completion(nil); return
         }
-        // Themed scenery by default (high quality, work-appropriate). Anime
-        // character art (via nekos.best) is opt-in, since it can be stylized or
-        // suggestive — enable it with PRODUCTIVITY_BREAK_ANIME=on.
+        // If the user supplied their own provider key (Unsplash/Pexels photos,
+        // Giphy/Tenor GIFs), prefer it; otherwise use the free sources. Either
+        // way, fall back gracefully so a break always has a visual.
+        if !userImageProviders().isEmpty {
+            fetchFromUserProvider(for: message) { [weak self] url in
+                if url != nil { completion(url) }
+                else { self?.fetchSceneryOrAnime(for: message, completion: completion) }
+            }
+            return
+        }
+        fetchSceneryOrAnime(for: message, completion: completion)
+    }
+
+    // Free, no-key sources: themed scenery by default; opt-in anime art.
+    private func fetchSceneryOrAnime(for message: String, completion: @escaping (URL?) -> Void) {
         let animeOn = envBool("PRODUCTIVITY_BREAK_ANIME", false)
         if animeOn && Int.random(in: 0..<3) == 0 {
             fetchAnimeImage { url in
@@ -910,6 +922,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 else if animeOn { self.fetchAnimeImage(completion: completion) }
                 else { completion(nil) }
             }
+        }
+    }
+
+    // ---- optional user-supplied image/GIF providers (via API key) ----
+    // Set any of these (env or config.json) to fetch break visuals from a
+    // provider of your choice, themed to the message. Get free keys at:
+    //   Unsplash: https://unsplash.com/developers   Pexels: https://www.pexels.com/api/
+    //   Giphy:    https://developers.giphy.com/      Tenor:  https://tenor.com/gifapi
+    private func userImageProviders() -> [String] {
+        func has(_ k: String) -> Bool { !(envString(k) ?? "").isEmpty }
+        var providers: [String] = []
+        if has("PRODUCTIVITY_BREAK_UNSPLASH_KEY") { providers.append("unsplash") }
+        if has("PRODUCTIVITY_BREAK_PEXELS_KEY")   { providers.append("pexels") }
+        if has("PRODUCTIVITY_BREAK_GIPHY_KEY")    { providers.append("giphy") }
+        if has("PRODUCTIVITY_BREAK_TENOR_KEY")    { providers.append("tenor") }
+        return providers
+    }
+
+    private func fetchJSON(_ url: URL, headers: [String: String] = [:], completion: @escaping (Any?) -> Void) {
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 4
+        req.setValue(HTTP_UA, forHTTPHeaderField: "User-Agent")
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            completion(data.flatMap { try? JSONSerialization.jsonObject(with: $0) })
+        }.resume()
+    }
+
+    private func fetchFromUserProvider(for message: String, completion: @escaping (URL?) -> Void) {
+        guard let provider = userImageProviders().randomElement() else { completion(nil); return }
+        let q = themeQuery(for: message)
+        let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
+        FileHandle.standardError.write("[productivity_break] visual via \(provider): \(q)\n".data(using: .utf8)!)
+        func fail() { DispatchQueue.main.async { completion(nil) } }
+        switch provider {
+        case "unsplash":
+            let key = envString("PRODUCTIVITY_BREAK_UNSPLASH_KEY") ?? ""
+            guard let url = URL(string: "https://api.unsplash.com/photos/random?orientation=portrait&content_filter=high&query=\(enc)&client_id=\(key)") else { fail(); return }
+            fetchJSON(url) { json in
+                guard let o = json as? [String: Any], let urls = o["urls"] as? [String: Any],
+                      let raw = (urls["regular"] as? String) ?? (urls["full"] as? String),
+                      let m = URL(string: raw) else { fail(); return }
+                self.downloadToTemp(m, completion: completion)
+            }
+        case "pexels":
+            let key = envString("PRODUCTIVITY_BREAK_PEXELS_KEY") ?? ""
+            guard let url = URL(string: "https://api.pexels.com/v1/search?orientation=portrait&per_page=20&query=\(enc)") else { fail(); return }
+            fetchJSON(url, headers: ["Authorization": key]) { json in
+                guard let o = json as? [String: Any], let photos = o["photos"] as? [[String: Any]],
+                      let src = photos.randomElement()?["src"] as? [String: Any],
+                      let raw = (src["portrait"] as? String) ?? (src["large"] as? String),
+                      let m = URL(string: raw) else { fail(); return }
+                self.downloadToTemp(m, completion: completion)
+            }
+        case "giphy":
+            let key = envString("PRODUCTIVITY_BREAK_GIPHY_KEY") ?? ""
+            guard let url = URL(string: "https://api.giphy.com/v1/gifs/search?rating=g&limit=20&q=\(enc)&api_key=\(key)") else { fail(); return }
+            fetchJSON(url) { json in
+                guard let o = json as? [String: Any], let data = o["data"] as? [[String: Any]],
+                      let images = data.randomElement()?["images"] as? [String: Any],
+                      let orig = images["original"] as? [String: Any],
+                      let raw = orig["url"] as? String, let m = URL(string: raw) else { fail(); return }
+                self.downloadToTemp(m, completion: completion)
+            }
+        case "tenor":
+            let key = envString("PRODUCTIVITY_BREAK_TENOR_KEY") ?? ""
+            guard let url = URL(string: "https://tenor.googleapis.com/v2/search?contentfilter=high&media_filter=gif&limit=20&q=\(enc)&key=\(key)") else { fail(); return }
+            fetchJSON(url) { json in
+                guard let o = json as? [String: Any], let results = o["results"] as? [[String: Any]],
+                      let mf = results.randomElement()?["media_formats"] as? [String: Any],
+                      let gif = mf["gif"] as? [String: Any],
+                      let raw = gif["url"] as? String, let m = URL(string: raw) else { fail(); return }
+                self.downloadToTemp(m, completion: completion)
+            }
+        default:
+            fail()
         }
     }
 
@@ -1083,6 +1171,11 @@ if CommandLine.arguments.contains("--help") || CommandLine.arguments.contains("-
       PRODUCTIVITY_BREAK_ANIME           [off]   Allow opt-in anime art (nekos.best, SFW) as a visual.
       PRODUCTIVITY_BREAK_MESSAGES        [unset] Your own break messages, separated by "|" (overrides QUOTES fetch).
       PRODUCTIVITY_BREAK_VIDEO           [unset] Path to a custom break visual (mp4/mov/image/GIF); always wins, skips VISUALS.
+      PRODUCTIVITY_BREAK_UNSPLASH_KEY    [unset] Unsplash API key — fetch themed photos from your account.
+      PRODUCTIVITY_BREAK_PEXELS_KEY      [unset] Pexels API key — fetch themed photos.
+      PRODUCTIVITY_BREAK_GIPHY_KEY       [unset] Giphy API key — fetch themed GIFs.
+      PRODUCTIVITY_BREAK_TENOR_KEY       [unset] Tenor API key — fetch themed GIFs.
+                                                 (Any provider key set is preferred over the free image source.)
 
     Boolean vars accept on/off, true/false, yes/no, 1/0.
     Any variable above may also be set in ~/.config/productivity_break/config.json

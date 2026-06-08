@@ -62,6 +62,28 @@ Remove it any time:
 ./Scripts/uninstall.sh
 ```
 
+## Bring your own images / GIFs (API key)
+
+Prefer your own photo/GIF source? Drop in a free API key and the break visual is
+fetched from that provider instead — still **themed to the message** (a quote
+about the sea → "ocean waves", etc.) and with safe content ratings.
+
+| Provider | Key env var | Get a free key |
+|----------|-------------|----------------|
+| Unsplash (photos) | `PRODUCTIVITY_BREAK_UNSPLASH_KEY` | https://unsplash.com/developers |
+| Pexels (photos)   | `PRODUCTIVITY_BREAK_PEXELS_KEY`   | https://www.pexels.com/api/ |
+| Giphy (GIFs)      | `PRODUCTIVITY_BREAK_GIPHY_KEY`    | https://developers.giphy.com/ |
+| Tenor (GIFs)      | `PRODUCTIVITY_BREAK_TENOR_KEY`    | https://tenor.com/gifapi |
+
+```bash
+PRODUCTIVITY_BREAK_UNSPLASH_KEY=your_key swift run productivity_break --test
+```
+
+Set the key as an env var or in `config.json`. If several are set, one is chosen
+at random per break. If a provider call fails (or no key is set), it falls back
+to the free Openverse source, then your local image, then the built-in cat — so
+a break always shows something.
+
 ## Optional: a break video
 
 By default productivity_break draws its own vector animal. To play a looping
@@ -151,6 +173,10 @@ re-run `install.sh`):
 | `PRODUCTIVITY_BREAK_SNOOZE_MINUTES`| `5`     | Re-arm delay when you press `S` to snooze          |
 | `PRODUCTIVITY_BREAK_MENUBAR`      | (off)   | `on` shows a ☕ menu-bar control                    |
 | `PRODUCTIVITY_BREAK_STYLE`        | `overlay` | `overlay` (full-screen) or `notify` (a macOS notification, no takeover) |
+| `PRODUCTIVITY_BREAK_UNSPLASH_KEY` | (unset) | Unsplash API key — fetch themed photos from your account |
+| `PRODUCTIVITY_BREAK_PEXELS_KEY`   | (unset) | Pexels API key — themed photos |
+| `PRODUCTIVITY_BREAK_GIPHY_KEY`    | (unset) | Giphy API key — themed GIFs |
+| `PRODUCTIVITY_BREAK_TENOR_KEY`    | (unset) | Tenor API key — themed GIFs |
 | `PRODUCTIVITY_BREAK_DEFER_APPS`   | (calls) | Comma-separated apps during which a due break waits |
 | `PRODUCTIVITY_BREAK_OVERLAY_ALPHA`| `0.92`  | Background dimming (0 = clear, 1 = opaque black)   |
 | `PRODUCTIVITY_BREAK_QUOTES`       | (on)    | Set to `off` to use only local messages (no network) |
