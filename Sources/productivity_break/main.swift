@@ -256,7 +256,7 @@ final class OverlayController {
     private let fadeInDur = 0.4
     private let fadeOutDur = 0.5
 
-    init(message: String) {
+    init(message: String, mediaURL: URL? = nil) {
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let frame = screen.frame
         window = NSWindow(contentRect: frame, styleMask: .borderless,
@@ -277,7 +277,7 @@ final class OverlayController {
         // back to the vector art if no media is available.
         var rest: CGFloat = 0
         var startOff = frame.height * 1.12
-        if let url = resolveMediaURL() {
+        if let url = mediaURL ?? resolveMediaURL() {
             // Detect the media's actual size so ANY aspect ratio (portrait,
             // landscape, square) fits nicely.
             let size = mediaNaturalSize(url)
@@ -447,17 +447,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fetchBreakMessage { [weak self] msg in
             guard let self = self else { return }
             FileHandle.standardError.write("[productivity_break] break message: \(msg)\n".data(using: .utf8)!)
-            let oc = OverlayController(message: msg)
-            oc.onDone = { [weak self] in
+            self.fetchBreakImage(for: msg) { [weak self] mediaURL in
                 guard let self = self else { return }
-                self.overlay = nil
-                self.presenting = false
-                self.focused = 0
-                self.lastTick = Date()
-                if self.testMode { NSApp.terminate(nil) }
+                let oc = OverlayController(message: msg, mediaURL: mediaURL)
+                oc.onDone = { [weak self] in
+                    guard let self = self else { return }
+                    self.overlay = nil
+                    self.presenting = false
+                    self.focused = 0
+                    self.lastTick = Date()
+                    if self.testMode { NSApp.terminate(nil) }
+                }
+                self.overlay = oc
+                oc.show()
             }
-            self.overlay = oc
-            oc.show()
         }
     }
 
@@ -528,6 +531,129 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "Screen break! Let your eyes wander somewhere far away.",
         ]
         return messages.randomElement() ?? messages[0]
+    }
+
+    // Pick a visual that resonates with the message: derive a theme from the
+    // text, then fetch a relevant image (scenery via Openverse, or anime art).
+    // Falls back to the local media file (or vector art) on any failure.
+    //   - Disable with PRODUCTIVITY_BREAK_VISUALS=off  (uses the local visual)
+    //   - A pinned PRODUCTIVITY_BREAK_VIDEO always wins and skips this.
+    private func fetchBreakImage(for message: String, completion: @escaping (URL?) -> Void) {
+        if (ENV["PRODUCTIVITY_BREAK_VISUALS"] ?? "").lowercased() == "off"
+            || ENV["PRODUCTIVITY_BREAK_VIDEO"] != nil {
+            completion(nil); return
+        }
+        // Themed scenery by default (high quality, work-appropriate). Anime
+        // character art (via nekos.best) is opt-in, since it can be stylized or
+        // suggestive — enable it with PRODUCTIVITY_BREAK_ANIME=on.
+        let animeOn = ["1", "on", "true", "yes"].contains((ENV["PRODUCTIVITY_BREAK_ANIME"] ?? "").lowercased())
+        if animeOn && Int.random(in: 0..<3) == 0 {
+            fetchAnimeImage { url in
+                if url != nil { completion(url) }
+                else { self.fetchSceneryImage(for: message, completion: completion) }
+            }
+        } else {
+            fetchSceneryImage(for: message) { url in
+                if url != nil { completion(url) }
+                else if animeOn { self.fetchAnimeImage(completion: completion) }
+                else { completion(nil) }
+            }
+        }
+    }
+
+    // Map salient words in the message to a clean, image-search-friendly theme.
+    private func themeQuery(for message: String) -> String {
+        let m = message.lowercased()
+        let map: [([String], String)] = [
+            (["sea", "ocean", "wave", "tide", "sail", "ship", "boat"], "ocean waves"),
+            (["beach", "shore", "sand", "coast"], "tropical beach"),
+            (["mountain", "peak", "summit", "hill", "climb", "storm"], "mountain landscape"),
+            (["forest", "tree", "woods", "leaf", "leaves", "jungle"], "forest path"),
+            (["sky", "star", "cosmos", "universe", "space", "galaxy", "moon"], "starry night sky"),
+            (["sun", "sunrise", "sunset", "dawn", "dusk"], "sunset sky"),
+            (["rain", "cloud", "mist", "fog"], "misty landscape"),
+            (["river", "lake", "stream", "pond"], "calm lake"),
+            (["flower", "garden", "bloom", "spring"], "flower garden"),
+            (["snow", "winter", "ice", "cold"], "snowy mountains"),
+            (["calm", "peace", "rest", "relax", "breathe", "quiet", "still"], "zen garden"),
+            (["walk", "path", "journey", "road", "travel"], "scenic path"),
+            (["nature", "wild", "earth", "green", "grow"], "nature landscape"),
+        ]
+        for (words, q) in map where words.contains(where: { m.contains($0) }) { return q }
+        let calming = ["mountain landscape", "ocean sunset", "forest path", "starry night sky",
+                       "calm lake", "autumn forest", "misty mountains", "tropical beach",
+                       "northern lights", "cherry blossom"]
+        return calming.randomElement() ?? "mountain landscape"
+    }
+
+    private func downloadToTemp(_ url: URL, completion: @escaping (URL?) -> Void) {
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 6
+        req.setValue("productivity_break/1.0", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            guard let data = data, data.count > 1024, NSImage(data: data) != nil else {
+                DispatchQueue.main.async { completion(nil) }; return
+            }
+            var ext = url.pathExtension.lowercased()
+            if ext.isEmpty || ext.count > 4 { ext = "jpg" }
+            let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("productivity_break_visual." + ext)
+            do {
+                try? FileManager.default.removeItem(at: tmp)
+                try data.write(to: tmp)
+                DispatchQueue.main.async { completion(tmp) }
+            } catch {
+                DispatchQueue.main.async { completion(nil) }
+            }
+        }.resume()
+    }
+
+    private func fetchSceneryImage(for message: String, completion: @escaping (URL?) -> Void) {
+        let q = themeQuery(for: message)
+        FileHandle.standardError.write("[productivity_break] visual theme: \(q)\n".data(using: .utf8)!)
+        var comps = URLComponents(string: "https://api.openverse.org/v1/images/")!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: q),
+            URLQueryItem(name: "page_size", value: "20"),
+            URLQueryItem(name: "mature", value: "false"),
+            URLQueryItem(name: "license_type", value: "all"),
+        ]
+        guard let url = comps.url else { completion(nil); return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 4
+        req.setValue("productivity_break/1.0", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            guard let self = self, let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let results = json["results"] as? [[String: Any]] else {
+                DispatchQueue.main.async { completion(nil) }; return
+            }
+            let urls = results.compactMap { $0["url"] as? String }.filter { $0.hasPrefix("http") }
+            guard let pick = urls.randomElement(), let imgURL = URL(string: pick) else {
+                DispatchQueue.main.async { completion(nil) }; return
+            }
+            self.downloadToTemp(imgURL, completion: completion)
+        }.resume()
+    }
+
+    private func fetchAnimeImage(completion: @escaping (URL?) -> Void) {
+        let cats = ["neko", "waifu", "husbando", "kitsune"]
+        let cat = cats.randomElement() ?? "neko"
+        FileHandle.standardError.write("[productivity_break] visual theme: anime/\(cat)\n".data(using: .utf8)!)
+        guard let url = URL(string: "https://nekos.best/api/v2/\(cat)") else { completion(nil); return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 4
+        req.setValue("productivity_break/1.0", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            guard let self = self, let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let results = json["results"] as? [[String: Any]],
+                  let first = results.first, let pick = first["url"] as? String,
+                  let imgURL = URL(string: pick) else {
+                DispatchQueue.main.async { completion(nil) }; return
+            }
+            self.downloadToTemp(imgURL, completion: completion)
+        }.resume()
     }
 
     private func fmt(_ x: Double) -> String {

@@ -91,6 +91,32 @@ A nice sample is the floating-cat clip
 > your personal use only — please make sure you have the right to use any clip
 > you add.
 
+## Dynamic break content
+
+Every break is different. When the overlay appears it fetches, on the fly:
+
+- **A fresh message** — a famous quote, a fun fact, or a piece of advice pulled
+  at random from free public APIs (ZenQuotes, dummyjson, uselessfacts,
+  adviceslip). Set `PRODUCTIVITY_BREAK_QUOTES=off` to use the built-in local
+  pool instead, or `PRODUCTIVITY_BREAK_MESSAGES="a|b|c"` to supply your own.
+
+- **A matching visual** — a theme is derived from that message (e.g. a message
+  about the sea → *ocean waves*; about stars → *starry night sky*; otherwise a
+  random calming landscape) and a relevant image is fetched from
+  [Openverse](https://openverse.org). Set `PRODUCTIVITY_BREAK_VISUALS=off` to
+  use the local image instead. Set `PRODUCTIVITY_BREAK_ANIME=on` to also mix in
+  anime art now and then (off by default — that source returns character art
+  that can be stylized/suggestive).
+
+Both fetches are async with short timeouts and **graceful fallbacks**: if you're
+offline or a source is slow, the message falls back to the local pool and the
+visual falls back to your local file, then to the built-in vector cat. So a
+break always works, online or not.
+
+> These features make outbound HTTPS requests to the APIs above at each break
+> (no personal data is sent). Turn them off with the `*_QUOTES=off` /
+> `*_VISUALS=off` switches if you prefer a fully offline tool.
+
 ## Configuration
 
 Set these as environment variables (or edit the `EnvironmentVariables` block in
@@ -103,6 +129,10 @@ re-run `install.sh`):
 | `PRODUCTIVITY_BREAK_SHOW_SECONDS` | `8`     | How long the overlay stays on screen               |
 | `PRODUCTIVITY_BREAK_POLL_SECONDS` | `5`     | How often focus is checked                         |
 | `PRODUCTIVITY_BREAK_OVERLAY_ALPHA`| `0.92`  | Background dimming (0 = clear, 1 = opaque black)   |
+| `PRODUCTIVITY_BREAK_QUOTES`       | (on)    | Set to `off` to use only local messages (no network) |
+| `PRODUCTIVITY_BREAK_MESSAGES`     | (none)  | Your own message pool, separated by `\|` — overrides the online fetch |
+| `PRODUCTIVITY_BREAK_VISUALS`      | (on)    | Set to `off` to skip fetching a matching image (use the local visual) |
+| `PRODUCTIVITY_BREAK_ANIME`        | (off)   | Set to `on` to occasionally use anime art (nekos.best) as the visual |
 | `PRODUCTIVITY_BREAK_VIDEO`        | (auto)  | Path to a video. Auto-discovered from the repo's `Resources/`, the install dir, etc. |
 | `PRODUCTIVITY_BREAK_TERMINAL_APPS`| `Terminal,iTerm,Warp,Alacritty,kitty,Hyper,WezTerm,Ghostty` | Comma-separated app names that count as "the terminal" (matched as case-insensitive substrings) |
 
