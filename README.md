@@ -94,12 +94,21 @@ in the binary. Beyond that, in order of precedence:
 1. **A pinned local file** — set `PRODUCTIVITY_BREAK_VIDEO=/path/to/file`
    (mp4/mov/image/GIF), or drop a `productivity_break.<ext>` next to the binary,
    in `~/Library/Application Support/productivity_break/`, or in `./Resources/`.
-   Any aspect ratio is auto-fit.
-2. **Your own provider** — set an API key (below) to fetch themed photos/GIFs.
-3. **Free themed scenery** — fetched from [Openverse](https://openverse.org)
-   (no key), matched to the message; opt-in anime art via
-   `PRODUCTIVITY_BREAK_ANIME=on`.
-4. **The vector animal** — the always-available fallback.
+   Any aspect ratio is auto-fit. Always wins; skips the fetch below.
+2. **A fetched visual** — when `PRODUCTIVITY_BREAK_VISUALS` is on (default), each
+   break is a **50/50 coin flip between an animated GIF and a static image**
+   (each falls back to the other if its source is unavailable):
+   - **Static image** — a themed photo from your Unsplash/Pexels key if set,
+     else free themed scenery from [Openverse](https://openverse.org) (no key);
+     opt-in anime art via `PRODUCTIVITY_BREAK_ANIME=on`.
+   - **Animated GIF** — themed to the break message. Uses your Giphy/Tenor key
+     if set (reliable). Otherwise **keyless**: an any-topic themed GIF via
+     [Tenor](https://tenor.com)'s public *demo* endpoint, falling back to cat
+     GIFs ([The Cat API](https://thecatapi.com)) and 70+ anime reaction GIFs
+     ([otakugifs.xyz](https://otakugifs.xyz)) if that shared demo key is
+     throttled. The demo key is best-effort — for reliability, set your own free
+     `PRODUCTIVITY_BREAK_TENOR_KEY` (below).
+3. **The vector animal** — the always-available offline fallback.
 
 ### Bring your own images / GIFs (API key)
 
@@ -185,7 +194,7 @@ agent, you can also edit the `EnvironmentVariables` block of
 |----------|---------|---------|
 | `PRODUCTIVITY_BREAK_QUOTES` | `on` | `off` → local messages only (no network) |
 | `PRODUCTIVITY_BREAK_MESSAGES` | _(unset)_ | Your own messages, separated by `\|` (overrides the fetch) |
-| `PRODUCTIVITY_BREAK_VISUALS` | `on` | `off` → skip image fetch (use the local/vector visual) |
+| `PRODUCTIVITY_BREAK_VISUALS` | `on` | Fetch a visual per break — 50/50 animated GIF vs static image. `off` → skip the fetch (use the local/vector visual) |
 | `PRODUCTIVITY_BREAK_ANIME` | `off` | `on` → occasionally use anime art (nekos.best, SFW) |
 | `PRODUCTIVITY_BREAK_VIDEO` | _(auto)_ | Path to a pinned local visual (mp4/mov/image/GIF) |
 | `PRODUCTIVITY_BREAK_UNSPLASH_KEY` | _(unset)_ | Unsplash API key — themed photos |
@@ -200,7 +209,12 @@ Booleans accept `on/off`, `true/false`, `yes/no`, `1/0`.
 ```
 productivity_break/
 ├── Package.swift                              # Swift Package Manager manifest
-├── Sources/productivity_break/main.swift      # the whole program
+├── Sources/
+│   ├── ProductivityBreakCore/                 # pure, unit-tested logic (no AppKit/IO)
+│   └── productivity_break/main.swift          # the macOS app (GUI, focus, networking)
+├── Tests/
+│   ├── ProductivityBreakCoreTests/            # XCTest unit tests (`swift test`)
+│   └── cli-tests.sh                           # CLI integration tests (no Xcode needed)
 ├── Scripts/
 │   ├── install.sh / uninstall.sh              # set up / tear down the login agent
 │   └── fetch-video.sh                         # download the optional sample clip
@@ -219,8 +233,13 @@ productivity_break/
 
 ```bash
 swift build -c release          # -> .build/release/productivity_break
-# or a single-file build:
-swiftc -O Sources/productivity_break/main.swift -o productivity_break
+```
+
+## Tests
+
+```bash
+swift test            # unit tests for the core logic (needs Xcode's XCTest)
+Tests/cli-tests.sh    # CLI integration tests (Command Line Tools only)
 ```
 
 ## Contributing
