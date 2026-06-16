@@ -15,6 +15,9 @@ productivity_break.dSYM/
 # Local Claude Code settings
 .claude/
 
+# Editor / IDE
+.vscode/
+
 # Third-party break video — NOT redistributed. Fetch it locally with
 # Scripts/fetch-video.sh, or point PRODUCTIVITY_BREAK_VIDEO at your own clip.
 Resources/productivity_break.*
