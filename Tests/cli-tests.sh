@@ -156,7 +156,8 @@ assert_contains  "non-numeric env reports INVALID CONFIG" "INVALID CONFIG" \
 # Every numeric var is validated — a regression dropping one from the loop
 # must fail here, so check them all.
 for v in BREAK_MINUTES PRODUCTIVITY_BREAK_SHOW_SECONDS PRODUCTIVITY_BREAK_POLL_SECONDS \
-         PRODUCTIVITY_BREAK_OVERLAY_ALPHA PRODUCTIVITY_BREAK_IDLE_SECONDS; do
+         PRODUCTIVITY_BREAK_OVERLAY_ALPHA PRODUCTIVITY_BREAK_IDLE_SECONDS \
+         PRODUCTIVITY_BREAK_SNOOZE_MINUTES; do
     assert_exit  "non-numeric $v exits 1" 1 \
         env CFFIXED_USER_HOME="$EMPTY_HOME" "$v=xyz" "$BIN" --validate-config
 done

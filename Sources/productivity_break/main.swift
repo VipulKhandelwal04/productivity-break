@@ -85,6 +85,16 @@ func cleanupTempVisuals() {
     }
 }
 
+// Delete a single downloaded temp visual once it's no longer needed. No-ops for
+// nil and for any non-temp path (e.g. a pinned PRODUCTIVITY_BREAK_VIDEO), so it
+// is safe to call with whatever media URL a break happened to use.
+func removeTempVisual(_ url: URL?) {
+    guard let url = url,
+          url.path.hasPrefix(NSTemporaryDirectory()),
+          url.lastPathComponent.hasPrefix("productivity_break_visual.") else { return }
+    try? FileManager.default.removeItem(at: url)
+}
+
 // Can this media file actually be decoded? (Network images are validated on
 // download; this guards local/pinned files so a corrupt one doesn't show blank.)
 func mediaIsUsable(_ url: URL) -> Bool {
@@ -569,7 +579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         if testMode {
             FileHandle.standardError.write("[productivity_break] --test: showing the break overlay now.\n".data(using: .utf8)!)
-            showBreak()
+            showBreak(force: true)   // force: --test must always show + exit, even if a defer app is frontmost
             return
         }
         FileHandle.standardError.write(
@@ -590,8 +600,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fetchBreakMessage { [weak self] msg in
             guard let self = self else { return }
             self.fetchBreakImage(for: msg) { [weak self] url in
-                self?.cachedMessage = msg
-                self?.cachedMediaURL = url
+                guard let self = self else { return }
+                // A previously prefetched-but-never-shown visual is now stale.
+                if self.cachedMediaURL != url { removeTempVisual(self.cachedMediaURL) }
+                self.cachedMessage = msg
+                self.cachedMediaURL = url
             }
         }
     }
@@ -759,6 +772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if BREAK_STYLE == "notify" {
             FileHandle.standardError.write("[productivity_break] notify mode — posting notification.\n".data(using: .utf8)!)
             notifyBreak(message: message)
+            removeTempVisual(mediaURL)        // notify shows no visual; don't leak the prefetched temp file
             // No overlay, no onDone callback: complete the break inline. Mirror the
             // non-snooze branch of OverlayController.onDone. Snooze has no equivalent
             // here (no key/button routing to a bare notification), so SNOOZE_MINUTES is inert.
@@ -775,6 +789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let snoozed = oc?.snoozeRequested ?? false
             self.overlay = nil
             self.presenting = false
+            removeTempVisual(mediaURL)        // break's over; its visual is loaded in-memory, reap the temp file
             // Snooze: re-arm in SNOOZE_MINUTES instead of nuking the cycle.
             self.focused = snoozed ? max(0, THRESHOLD - SNOOZE_MINUTES * 60.0) : 0
             self.lastTick = Date()
@@ -1088,10 +1103,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             var ext = url.pathExtension.lowercased()
             if ext.isEmpty || ext.count > 4 { ext = "jpg" }
+            // Unique filename: two prefetch chains can download concurrently and
+            // must not clobber each other's bytes in the shared temp dir. Stale
+            // files are reaped when their break ends (removeTempVisual) and on
+            // quit (cleanupTempVisuals).
             let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("productivity_break_visual." + ext)
+                .appendingPathComponent("productivity_break_visual.\(UUID().uuidString).\(ext)")
             do {
-                try? FileManager.default.removeItem(at: tmp)
                 try data.write(to: tmp)
                 DispatchQueue.main.async { completion(tmp) }
             } catch {
@@ -1157,7 +1175,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 func validateConfig() -> Int32 {
     var ok = true
     let numeric = ["BREAK_MINUTES", "PRODUCTIVITY_BREAK_SHOW_SECONDS", "PRODUCTIVITY_BREAK_POLL_SECONDS",
-                   "PRODUCTIVITY_BREAK_OVERLAY_ALPHA", "PRODUCTIVITY_BREAK_IDLE_SECONDS"]
+                   "PRODUCTIVITY_BREAK_OVERLAY_ALPHA", "PRODUCTIVITY_BREAK_IDLE_SECONDS",
+                   "PRODUCTIVITY_BREAK_SNOOZE_MINUTES"]
     for k in numeric {
         if let v = ENV[k], Double(v) == nil {
             FileHandle.standardError.write("[productivity_break] invalid \(k)=\(v) — expected a number\n".data(using: .utf8)!)
