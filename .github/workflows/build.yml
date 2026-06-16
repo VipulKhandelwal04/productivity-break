@@ -13,16 +13,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Show Swift version
         run: swift --version
+      - name: Lint test harness
+        run: |
+          brew install shellcheck
+          shellcheck Tests/cli-tests.sh
       - name: Build (release)
         run: swift build -c release
-      - name: Validate config (headless)
-        run: |
-          set -euo pipefail
-          ./.build/release/productivity_break --validate-config
-          echo "default config OK"
-          # Negative test: a bad value must exit non-zero.
-          if BREAK_MINUTES=not-a-number ./.build/release/productivity_break --validate-config; then
-            echo "FAIL: bad config was accepted"; exit 1
-          else
-            echo "bad config correctly rejected"
-          fi
+      - name: Unit tests (ProductivityBreakCore)
+        run: swift test
+      - name: CLI tests (headless)
+        run: BIN=./.build/release/productivity_break ./Tests/cli-tests.sh

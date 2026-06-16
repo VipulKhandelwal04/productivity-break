@@ -11,7 +11,7 @@
 // found (see resolveMediaURL / the PRODUCTIVITY_BREAK_VIDEO env var) it is shown
 // instead — a looping video (mp4/mov) OR a still image / animated GIF.
 //
-// Build:  swift build -c release    (or: swiftc -O Sources/productivity_break/main.swift -o productivity_break)
+// Build:  swift build -c release    (pure logic lives in the ProductivityBreakCore module)
 // Run:    .build/release/productivity_break
 //         .build/release/productivity_break --test       (show the overlay right now)
 //         BREAK_MINUTES=0.2 .build/release/productivity_break
@@ -19,6 +19,7 @@
 import Cocoa
 import AVFoundation
 import CoreGraphics
+import ProductivityBreakCore
 
 // ---------------------------------------------------------------------------
 // Configuration (override with env vars)
@@ -28,18 +29,12 @@ let ENV = ProcessInfo.processInfo.environment
 // absent. MUST be initialized here, before any config `let` constant uses it.
 let CFG = loadConfigJSON()
 func envDouble(_ key: String, _ def: Double) -> Double {
-    if let v = ENV[key], let x = Double(v) { return x }
-    if let v = CFG[key], let x = Double(v) { return x }
-    return def
+    Core.double(key, def, env: ENV, cfg: CFG)
 }
 
 // Parse a boolean-ish env var consistently (on/off/true/false/yes/no/1/0).
 func envBool(_ key: String, _ def: Bool) -> Bool {
-    let raw = ENV[key] ?? CFG[key]
-    guard let v = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !v.isEmpty else { return def }
-    if ["1", "on", "true", "yes", "y"].contains(v) { return true }
-    if ["0", "off", "false", "no", "n"].contains(v) { return false }
-    return def
+    Core.bool(key, def, env: ENV, cfg: CFG)
 }
 
 // ============================================================================
@@ -63,42 +58,20 @@ func loadConfigJSON() -> [String: String] {
         FileHandle.standardError.write("[productivity_break] could not read \(path) — ignoring.\n".data(using: .utf8)!)
         return [:]
     }
-    let parsed: Any
     do {
-        parsed = try JSONSerialization.jsonObject(with: data, options: [])
-    } catch {
-        FileHandle.standardError.write("[productivity_break] invalid JSON in \(path): \(error.localizedDescription) — ignoring.\n".data(using: .utf8)!)
+        return try Core.parseConfigJSON(data)
+    } catch Core.ConfigError.invalidJSON(let detail) {
+        FileHandle.standardError.write("[productivity_break] invalid JSON in \(path): \(detail) — ignoring.\n".data(using: .utf8)!)
         return [:]
-    }
-    guard let dict = parsed as? [String: Any] else {
+    } catch {
         FileHandle.standardError.write("[productivity_break] \(path) must contain a top-level JSON object — ignoring.\n".data(using: .utf8)!)
         return [:]
     }
-
-    var out: [String: String] = [:]
-    for (k, v) in dict {
-        // Disambiguate JSON booleans from numbers: JSONSerialization bridges both
-        // to NSNumber, and `true` would otherwise stringify to "1".
-        if let n = v as? NSNumber, CFGetTypeID(n as CFTypeRef) == CFBooleanGetTypeID() {
-            out[k] = n.boolValue ? "true" : "false"
-        } else if let s = v as? String {
-            out[k] = s
-        } else if let n = v as? NSNumber {
-            out[k] = n.stringValue
-        } else if let arr = v as? [Any] {
-            // Comma-join arrays so list-style keys work with the existing
-            // `.split(separator: ",")` call sites.
-            out[k] = arr.map { "\($0)" }.joined(separator: ",")
-        }
-        // anything else (null/nested object) is ignored
-    }
-    return out
 }
 
 // Look up a raw string: env var wins, else config.json, else nil.
 func envString(_ key: String) -> String? {
-    if let v = ENV[key] { return v }
-    return CFG[key]
+    Core.string(key, env: ENV, cfg: CFG)
 }
 
 // Remove any leftover downloaded break visual(s) from the temp dir.
@@ -110,6 +83,16 @@ func cleanupTempVisuals() {
             try? fm.removeItem(atPath: (dir as NSString).appendingPathComponent(f))
         }
     }
+}
+
+// Delete a single downloaded temp visual once it's no longer needed. No-ops for
+// nil and for any non-temp path (e.g. a pinned PRODUCTIVITY_BREAK_VIDEO), so it
+// is safe to call with whatever media URL a break happened to use.
+func removeTempVisual(_ url: URL?) {
+    guard let url = url,
+          url.path.hasPrefix(NSTemporaryDirectory()),
+          url.lastPathComponent.hasPrefix("productivity_break_visual.") else { return }
+    try? FileManager.default.removeItem(at: url)
 }
 
 // Can this media file actually be decoded? (Network images are validated on
@@ -150,12 +133,10 @@ let TERMINAL_APPS: [String] = (envString("PRODUCTIVITY_BREAK_TERMINAL_APPS")
     .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
     .filter { !$0.isEmpty }
 
-let IMAGE_EXTENSIONS = ["gif", "png", "jpg", "jpeg", "heic", "bmp", "tiff", "webp"]
-let MEDIA_EXTENSIONS = ["mp4", "mov", "m4v"] + IMAGE_EXTENSIONS   // search/preference order
+let IMAGE_EXTENSIONS = Core.imageExtensions
+let MEDIA_EXTENSIONS = Core.mediaExtensions   // search/preference order
 
-func isImageURL(_ url: URL) -> Bool {
-    IMAGE_EXTENSIONS.contains(url.pathExtension.lowercased())
-}
+func isImageURL(_ url: URL) -> Bool { Core.isImageURL(url) }
 
 // Find an optional break visual (video, image, or GIF). It is NOT bundled with
 // the project (it may be third-party art); we look in these places, in order:
@@ -598,7 +579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         if testMode {
             FileHandle.standardError.write("[productivity_break] --test: showing the break overlay now.\n".data(using: .utf8)!)
-            showBreak()
+            showBreak(force: true)   // force: --test must always show + exit, even if a defer app is frontmost
             return
         }
         FileHandle.standardError.write(
@@ -619,8 +600,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fetchBreakMessage { [weak self] msg in
             guard let self = self else { return }
             self.fetchBreakImage(for: msg) { [weak self] url in
-                self?.cachedMessage = msg
-                self?.cachedMediaURL = url
+                guard let self = self else { return }
+                // A previously prefetched-but-never-shown visual is now stale.
+                if self.cachedMediaURL != url { removeTempVisual(self.cachedMediaURL) }
+                self.cachedMessage = msg
+                self.cachedMediaURL = url
             }
         }
     }
@@ -788,6 +772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if BREAK_STYLE == "notify" {
             FileHandle.standardError.write("[productivity_break] notify mode — posting notification.\n".data(using: .utf8)!)
             notifyBreak(message: message)
+            removeTempVisual(mediaURL)        // notify shows no visual; don't leak the prefetched temp file
             // No overlay, no onDone callback: complete the break inline. Mirror the
             // non-snooze branch of OverlayController.onDone. Snooze has no equivalent
             // here (no key/button routing to a bare notification), so SNOOZE_MINUTES is inert.
@@ -804,6 +789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let snoozed = oc?.snoozeRequested ?? false
             self.overlay = nil
             self.presenting = false
+            removeTempVisual(mediaURL)        // break's over; its visual is loaded in-memory, reap the temp file
             // Snooze: re-arm in SNOOZE_MINUTES instead of nuking the cycle.
             self.focused = snoozed ? max(0, THRESHOLD - SNOOZE_MINUTES * 60.0) : 0
             self.lastTick = Date()
@@ -885,27 +871,136 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return messages.randomElement() ?? messages[0]
     }
 
-    // Pick a visual that resonates with the message: derive a theme from the
-    // text, then fetch a relevant image (scenery via Openverse, or anime art).
-    // Falls back to the local media file (or vector art) on any failure.
-    //   - Disable with PRODUCTIVITY_BREAK_VISUALS=off  (uses the local visual)
+    // Pick a visual for the break. The kind is a 50/50 coin flip: half the
+    // breaks show an animated GIF, half a static image. Each kind falls back to
+    // the other if its source fails, so a break always gets a visual.
+    //   - Static image: a themed photo from your Unsplash/Pexels key if set,
+    //     else free Openverse scenery (or opt-in anime art).
+    //   - Animated GIF: a themed GIF from your Giphy/Tenor key if set, else free
+    //     animated cat GIFs from The Cat API (no key required).
+    //   - Disable all fetching with PRODUCTIVITY_BREAK_VISUALS=off (local visual)
     //   - A pinned PRODUCTIVITY_BREAK_VIDEO always wins and skips this.
     private func fetchBreakImage(for message: String, completion: @escaping (URL?) -> Void) {
         if !envBool("PRODUCTIVITY_BREAK_VISUALS", true)
             || envString("PRODUCTIVITY_BREAK_VIDEO") != nil {
             completion(nil); return
         }
-        // If the user supplied their own provider key (Unsplash/Pexels photos,
-        // Giphy/Tenor GIFs), prefer it; otherwise use the free sources. Either
-        // way, fall back gracefully so a break always has a visual.
-        if !userImageProviders().isEmpty {
-            fetchFromUserProvider(for: message) { [weak self] url in
+        if Bool.random() {                                  // 50%: animated GIF
+            fetchAnimatedGIF(for: message) { [weak self] url in
+                if url != nil { completion(url) }
+                else { self?.fetchStaticImage(for: message, completion: completion) }
+            }
+        } else {                                            // 50%: static image
+            fetchStaticImage(for: message) { [weak self] url in
+                if url != nil { completion(url) }
+                else { self?.fetchAnimatedGIF(for: message, completion: completion) }
+            }
+        }
+    }
+
+    // Static image: themed photo via a user key (Unsplash/Pexels), else free.
+    private func fetchStaticImage(for message: String, completion: @escaping (URL?) -> Void) {
+        if let provider = staticImageProviders().randomElement() {
+            fetchFromUserProvider(provider, for: message) { [weak self] url in
                 if url != nil { completion(url) }
                 else { self?.fetchSceneryOrAnime(for: message, completion: completion) }
             }
-            return
+        } else {
+            fetchSceneryOrAnime(for: message, completion: completion)
         }
-        fetchSceneryOrAnime(for: message, completion: completion)
+    }
+
+    // Animated GIF: a themed GIF via a user key (Giphy/Tenor) if set, else a
+    // free keyless GIF themed to the message (with cats/anime as fallback).
+    private func fetchAnimatedGIF(for message: String, completion: @escaping (URL?) -> Void) {
+        if let provider = gifProviders().randomElement() {
+            fetchFromUserProvider(provider, for: message) { [weak self] url in
+                if url != nil { completion(url) }
+                else { self?.fetchKeylessGIF(for: message, completion: completion) }
+            }
+        } else {
+            fetchKeylessGIF(for: message, completion: completion)
+        }
+    }
+
+    // Free, no-key animated GIFs. Prefers an any-topic GIF themed to the message
+    // (Tenor's public demo endpoint), and falls back to the keyless cat/anime
+    // rotation if that shared demo key is unavailable — so a GIF is always found.
+    private func fetchKeylessGIF(for message: String, completion: @escaping (URL?) -> Void) {
+        fetchTenorDemoGIF(for: message) { [weak self] url in
+            if url != nil { completion(url) }
+            else { self?.fetchAnimalOrAnimeGIF(completion: completion) }
+        }
+    }
+
+    // Keyless, genre-bounded GIFs: cats (The Cat API) or a random anime reaction
+    // (otakugifs.xyz), chosen at random; each falls back to the other.
+    private func fetchAnimalOrAnimeGIF(completion: @escaping (URL?) -> Void) {
+        if Bool.random() {
+            fetchCatGIF { [weak self] url in
+                if url != nil { completion(url) } else { self?.fetchOtakuGIF(completion: completion) }
+            }
+        } else {
+            fetchOtakuGIF { [weak self] url in
+                if url != nil { completion(url) } else { self?.fetchCatGIF(completion: completion) }
+            }
+        }
+    }
+
+    // Any-topic GIFs themed to the message via Tenor's legacy v1 PUBLIC DEMO key
+    // (no signup). This key is shared and intended for prototyping — it may be
+    // rate-limited or revoked without notice, so callers MUST fall back. For
+    // reliable themed GIFs, set your own PRODUCTIVITY_BREAK_TENOR_KEY (v2 API).
+    private static let tenorDemoKey = "LIVDSRZULELA"
+    private func fetchTenorDemoGIF(for message: String, completion: @escaping (URL?) -> Void) {
+        let q = themeQuery(for: message)
+        let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
+        FileHandle.standardError.write("[productivity_break] visual: Tenor GIF (\(q))\n".data(using: .utf8)!)
+        guard let url = URL(string: "https://g.tenor.com/v1/search?q=\(enc)&key=\(Self.tenorDemoKey)&limit=20&media_filter=minimal&contentfilter=high") else {
+            DispatchQueue.main.async { completion(nil) }; return
+        }
+        fetchJSON(url) { [weak self] json in
+            guard let self = self, let o = json as? [String: Any],
+                  let results = o["results"] as? [[String: Any]],
+                  let media = results.randomElement()?["media"] as? [[String: Any]],
+                  let gif = media.first?["gif"] as? [String: Any],
+                  let raw = gif["url"] as? String, let m = URL(string: raw) else {
+                DispatchQueue.main.async { completion(nil) }; return
+            }
+            self.downloadToTemp(m, completion: completion)
+        }
+    }
+
+    // Cat GIFs from The Cat API.
+    private func fetchCatGIF(completion: @escaping (URL?) -> Void) {
+        FileHandle.standardError.write("[productivity_break] visual: cat GIF\n".data(using: .utf8)!)
+        guard let url = URL(string: "https://api.thecatapi.com/v1/images/search?mime_types=gif&limit=1") else {
+            DispatchQueue.main.async { completion(nil) }; return
+        }
+        fetchJSON(url) { [weak self] json in
+            guard let self = self, let arr = json as? [[String: Any]], let first = arr.first,
+                  let raw = first["url"] as? String, let m = URL(string: raw) else {
+                DispatchQueue.main.async { completion(nil) }; return
+            }
+            self.downloadToTemp(m, completion: completion)
+        }
+    }
+
+    // Anime reaction GIFs from otakugifs.xyz — a random reaction from its 70+
+    // categories, for variety. No key required.
+    private func fetchOtakuGIF(completion: @escaping (URL?) -> Void) {
+        let r = Core.otakuReactions.randomElement() ?? "happy"
+        FileHandle.standardError.write("[productivity_break] visual: anime GIF (\(r))\n".data(using: .utf8)!)
+        guard let url = URL(string: "https://api.otakugifs.xyz/gif?reaction=\(r)") else {
+            DispatchQueue.main.async { completion(nil) }; return
+        }
+        fetchJSON(url) { [weak self] json in
+            guard let self = self, let o = json as? [String: Any],
+                  let raw = o["url"] as? String, let m = URL(string: raw) else {
+                DispatchQueue.main.async { completion(nil) }; return
+            }
+            self.downloadToTemp(m, completion: completion)
+        }
     }
 
     // Free, no-key sources: themed scenery by default; opt-in anime art.
@@ -930,15 +1025,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // provider of your choice, themed to the message. Get free keys at:
     //   Unsplash: https://unsplash.com/developers   Pexels: https://www.pexels.com/api/
     //   Giphy:    https://developers.giphy.com/      Tenor:  https://tenor.com/gifapi
-    private func userImageProviders() -> [String] {
-        func has(_ k: String) -> Bool { !(envString(k) ?? "").isEmpty }
-        var providers: [String] = []
-        if has("PRODUCTIVITY_BREAK_UNSPLASH_KEY") { providers.append("unsplash") }
-        if has("PRODUCTIVITY_BREAK_PEXELS_KEY")   { providers.append("pexels") }
-        if has("PRODUCTIVITY_BREAK_GIPHY_KEY")    { providers.append("giphy") }
-        if has("PRODUCTIVITY_BREAK_TENOR_KEY")    { providers.append("tenor") }
-        return providers
-    }
+    private func staticImageProviders() -> [String] { Core.staticImageProviders(env: ENV, cfg: CFG) }
+    private func gifProviders() -> [String] { Core.gifProviders(env: ENV, cfg: CFG) }
 
     private func fetchJSON(_ url: URL, headers: [String: String] = [:], completion: @escaping (Any?) -> Void) {
         var req = URLRequest(url: url)
@@ -950,8 +1038,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }.resume()
     }
 
-    private func fetchFromUserProvider(for message: String, completion: @escaping (URL?) -> Void) {
-        guard let provider = userImageProviders().randomElement() else { completion(nil); return }
+    private func fetchFromUserProvider(_ provider: String, for message: String, completion: @escaping (URL?) -> Void) {
         let q = themeQuery(for: message)
         let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
         FileHandle.standardError.write("[productivity_break] visual via \(provider): \(q)\n".data(using: .utf8)!)
@@ -1003,27 +1090,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Map salient words in the message to a clean, image-search-friendly theme.
     private func themeQuery(for message: String) -> String {
-        let m = message.lowercased()
-        let map: [([String], String)] = [
-            (["sea", "ocean", "wave", "tide", "sail", "ship", "boat"], "ocean waves"),
-            (["beach", "shore", "sand", "coast"], "tropical beach"),
-            (["mountain", "peak", "summit", "hill", "climb", "storm"], "mountain landscape"),
-            (["forest", "tree", "woods", "leaf", "leaves", "jungle"], "forest path"),
-            (["sky", "star", "cosmos", "universe", "space", "galaxy", "moon"], "starry night sky"),
-            (["sun", "sunrise", "sunset", "dawn", "dusk"], "sunset sky"),
-            (["rain", "cloud", "mist", "fog"], "misty landscape"),
-            (["river", "lake", "stream", "pond"], "calm lake"),
-            (["flower", "garden", "bloom", "spring"], "flower garden"),
-            (["snow", "winter", "ice", "cold"], "snowy mountains"),
-            (["calm", "peace", "rest", "relax", "breathe", "quiet", "still"], "zen garden"),
-            (["walk", "path", "journey", "road", "travel"], "scenic path"),
-            (["nature", "wild", "earth", "green", "grow"], "nature landscape"),
-        ]
-        for (words, q) in map where words.contains(where: { m.contains($0) }) { return q }
-        let calming = ["mountain landscape", "ocean sunset", "forest path", "starry night sky",
-                       "calm lake", "autumn forest", "misty mountains", "tropical beach",
-                       "northern lights", "cherry blossom"]
-        return calming.randomElement() ?? "mountain landscape"
+        Core.themeQuery(for: message)
     }
 
     private func downloadToTemp(_ url: URL, completion: @escaping (URL?) -> Void) {
@@ -1036,10 +1103,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             var ext = url.pathExtension.lowercased()
             if ext.isEmpty || ext.count > 4 { ext = "jpg" }
+            // Unique filename: two prefetch chains can download concurrently and
+            // must not clobber each other's bytes in the shared temp dir. Stale
+            // files are reaped when their break ends (removeTempVisual) and on
+            // quit (cleanupTempVisuals).
             let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("productivity_break_visual." + ext)
+                .appendingPathComponent("productivity_break_visual.\(UUID().uuidString).\(ext)")
             do {
-                try? FileManager.default.removeItem(at: tmp)
                 try data.write(to: tmp)
                 DispatchQueue.main.async { completion(tmp) }
             } catch {
@@ -1096,9 +1166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }.resume()
     }
 
-    private func fmt(_ x: Double) -> String {
-        x == x.rounded() ? String(Int(x)) : String(format: "%g", x)
-    }
+    private func fmt(_ x: Double) -> String { Core.fmt(x) }
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,7 +1175,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 func validateConfig() -> Int32 {
     var ok = true
     let numeric = ["BREAK_MINUTES", "PRODUCTIVITY_BREAK_SHOW_SECONDS", "PRODUCTIVITY_BREAK_POLL_SECONDS",
-                   "PRODUCTIVITY_BREAK_OVERLAY_ALPHA", "PRODUCTIVITY_BREAK_IDLE_SECONDS"]
+                   "PRODUCTIVITY_BREAK_OVERLAY_ALPHA", "PRODUCTIVITY_BREAK_IDLE_SECONDS",
+                   "PRODUCTIVITY_BREAK_SNOOZE_MINUTES"]
     for k in numeric {
         if let v = ENV[k], Double(v) == nil {
             FileHandle.standardError.write("[productivity_break] invalid \(k)=\(v) — expected a number\n".data(using: .utf8)!)
@@ -1124,7 +1193,6 @@ func validateConfig() -> Int32 {
     print("  OVERLAY_ALPHA   = \(OVERLAY_ALPHA)")
     print("  IDLE_SECONDS    = \(IDLE_SECONDS)")
     print("  TERMINAL_APPS   = \(TERMINAL_APPS.joined(separator: ", "))")
-    print("  QUOTES=\(envBool("PRODUCTIVITY_BREAK_QUOTES", true)) VISUALS=\(envBool("PRODUCTIVITY_BREAK_VISUALS", true)) ANIME=\(envBool("PRODUCTIVITY_BREAK_ANIME", false))")
     print("  QUOTES=\(envBool("PRODUCTIVITY_BREAK_QUOTES", true)) VISUALS=\(envBool("PRODUCTIVITY_BREAK_VISUALS", true)) ANIME=\(envBool("PRODUCTIVITY_BREAK_ANIME", false))")
     print("  STYLE           = \(BREAK_STYLE)")
     print(ok ? "OK" : "INVALID CONFIG")
@@ -1167,7 +1235,7 @@ if CommandLine.arguments.contains("--help") || CommandLine.arguments.contains("-
                                                  Comma-separated apps during which a due break is postponed (not reset).
       PRODUCTIVITY_BREAK_MENUBAR         [off]   Show a menu-bar control (Take a break / Pause / Quit).
       PRODUCTIVITY_BREAK_QUOTES          [on]    Fetch a quote/fact/advice from a public API for each break.
-      PRODUCTIVITY_BREAK_VISUALS         [on]    Fetch a themed scenery image for the overlay background.
+      PRODUCTIVITY_BREAK_VISUALS         [on]    Fetch a visual per break — 50/50 animated GIF (themed via Tenor; keyless demo key by default, cats/anime fallback) vs static image (Openverse / Unsplash / Pexels).
       PRODUCTIVITY_BREAK_ANIME           [off]   Allow opt-in anime art (nekos.best, SFW) as a visual.
       PRODUCTIVITY_BREAK_MESSAGES        [unset] Your own break messages, separated by "|" (overrides QUOTES fetch).
       PRODUCTIVITY_BREAK_VIDEO           [unset] Path to a custom break visual (mp4/mov/image/GIF); always wins, skips VISUALS.
